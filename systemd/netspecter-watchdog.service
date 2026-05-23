@@ -1,0 +1,8 @@
+[Unit]
+Description=NetSpecter Collector Watchdog
+After=network-online.target netspecter-collector.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/netspecter/collector_watchdog.sh

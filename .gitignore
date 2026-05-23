@@ -1,0 +1,30 @@
+# Runtime data
+netspecter.db
+*.db
+*.sqlite
+cache.json
+session.key
+secret.key
+*.key
+
+# Local deployment config
+config.json
+AdGuardHome.yaml
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Backups and logs
+*.backup
+*.bak
+*.bak-*
+*.log
+*.pid
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

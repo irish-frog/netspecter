@@ -1,0 +1,15 @@
+[Unit]
+Description=NetSpecter Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/netspecter
+ExecStart=/opt/netspecter/venv/bin/python /opt/netspecter/app.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

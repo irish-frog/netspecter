@@ -1,0 +1,17 @@
+[Unit]
+Description=NetSpecter Live Packet Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/netspecter
+ExecStart=/opt/netspecter/venv/bin/python /opt/netspecter/live_packet_collector.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

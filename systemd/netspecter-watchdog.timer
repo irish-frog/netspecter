@@ -1,0 +1,11 @@
+[Unit]
+Description=Run NetSpecter Collector Watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=netspecter-watchdog.service
+
+[Install]
+WantedBy=timers.target
