@@ -17,12 +17,21 @@ fi
 
 echo "[1/9] Installing base packages..."
 apt update
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils tcpdump curl wget nano git iftop bmon vnstat redis-server
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils tcpdump curl wget nano git iftop bmon vnstat redis-server lsb-release
 
 echo "[2/9] Installing ntopng repository and ntopng..."
 if ! command -v ntopng >/dev/null 2>&1; then
-  wget -q https://packages.ntop.org/apt/bookworm/all/apt-ntop.deb -O /tmp/apt-ntop.deb || true
-  if [ -s /tmp/apt-ntop.deb ]; then dpkg -i /tmp/apt-ntop.deb || true; apt update; apt install -y ntopng redis-server || true; fi
+  if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+    sed -i '/^Components:/ { /contrib/! s/$/ contrib/; }' /etc/apt/sources.list.d/debian.sources
+  fi
+  if [ -f /etc/apt/sources.list ]; then
+    sed -i -E '/^deb(-src)? .* main( |$)/ { / contrib/! s/ main( |$)/ main contrib\2/; }' /etc/apt/sources.list
+  fi
+  apt update
+  wget -q https://packages.ntop.org/apt/bookworm/all/apt-ntop.deb -O /tmp/apt-ntop.deb
+  apt install -y /tmp/apt-ntop.deb
+  apt update
+  apt install -y ntopng redis-server
 fi
 
 echo "[3/9] Installing AdGuard Home if requested..."
@@ -84,11 +93,16 @@ systemctl enable netspecter-web netspecter-collector netspecter-watchdog.timer
 systemctl restart netspecter-web netspecter-collector
 systemctl restart netspecter-watchdog.timer
 systemctl enable --now vnstat redis-server || true
-systemctl enable --now ntopng || true
-systemctl enable --now AdGuardHome || true
+systemctl enable AdGuardHome || true
+systemctl enable ntopng || true
 
 echo ""
 echo "=== NetSpecter installed ==="
 echo "Open: http://SERVER-IP:5050"
 echo "AdGuard template: $CONFIG_DIR/adguard/AdGuardHome.yaml.generated"
 echo "Check: systemctl status netspecter-web netspecter-collector"
+echo ""
+echo "NEXT: Complete AdGuard setup first at http://SERVER-IP:3000."
+echo "Choose port 80 for the AdGuard dashboard, then run:"
+echo "  systemctl enable --now ntopng"
+echo "ntopng uses port 3000 by default after AdGuard leaves its setup port."
