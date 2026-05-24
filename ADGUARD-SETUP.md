@@ -2,6 +2,31 @@
 
 This guide uses the AdGuard Home web interface. Do not copy a YAML file over your live AdGuard configuration.
 
+## Fill In Your Network Details First
+
+Before following the guide, write down the values for your own network:
+
+| Item | Your Value | Example Used In This Guide |
+| --- | --- | --- |
+| NetSpecter `br0` IP address | `________________` | `192.168.1.10` |
+| Gateway / router IP address | `________________` | `192.168.1.1` |
+| LAN network range | `________________` | `192.168.1.0/24` |
+| LAN prefix for NetSpecter Settings | `________________` | `192.168.1.` |
+
+You can see the NetSpecter bridge address and gateway on Debian with:
+
+```bash
+ip -br addr show br0
+ip route
+```
+
+Example output:
+
+```text
+br0  UP  192.168.1.10/24
+default via 192.168.1.1 dev br0
+```
+
 The example network used below is:
 
 ```text
@@ -13,7 +38,11 @@ ntopng web page:         http://192.168.1.10:3000
 NetSpecter web page:     http://192.168.1.10:5050
 ```
 
-Replace `192.168.1.10` with the IP address assigned to `br0` on your NetSpecter appliance.
+Throughout this guide:
+
+- Replace `192.168.1.10` with **your NetSpecter `br0` IP address**.
+- Replace `192.168.1.1` with **your gateway/router IP address**.
+- Replace `192.168.1.0/24` or `192.168.1.` with **your own LAN range/prefix**.
 
 ## 1. Start The AdGuard Installer Stage
 
@@ -31,14 +60,14 @@ On a new installation the script installs AdGuard Home first, then pauses before
 From a browser on your LAN, open:
 
 ```text
-http://192.168.1.10:3000
+http://YOUR-NETSPECTER-IP:3000
 ```
 
 On the first configuration page, set:
 
 | Setting | Recommended value |
 | --- | --- |
-| Admin Web Interface | NetSpecter bridge address / `192.168.1.10` |
+| Admin Web Interface | Your NetSpecter bridge address, for example `192.168.1.10` |
 | Admin Web Port | `80` |
 | DNS Server Interface | All interfaces / `0.0.0.0` |
 | DNS Server Port | `53` |
@@ -50,7 +79,7 @@ Create your AdGuard administrator username and password when prompted. Keep that
 When the wizard finishes, check that this opens:
 
 ```text
-http://192.168.1.10
+http://YOUR-NETSPECTER-IP
 ```
 
 In the AdGuard appearance/general settings, select the **Dark** theme if you want the interface to match the working NetSpecter appliance.
@@ -71,7 +100,7 @@ The second run installs ntopng, Redis, NetSpecter and its systemd services.
 Log into AdGuard:
 
 ```text
-http://192.168.1.10
+http://YOUR-NETSPECTER-IP
 ```
 
 Go to **Settings > DNS settings**.
@@ -114,10 +143,10 @@ Find the option for **Private reverse DNS servers** or **Private PTR resolvers**
 Enable the option to use private reverse DNS resolvers, then enter the address of your router:
 
 ```text
-192.168.1.1
+YOUR-GATEWAY-IP
 ```
 
-Use your own gateway address if it is different. This helps AdGuard show local device names when your router knows them.
+For example, on the example network this is `192.168.1.1`. This helps AdGuard show local device names when your router knows them.
 
 Click **Save**.
 
@@ -214,10 +243,10 @@ AdGuard: provides DNS filtering and query history
 Now open your router configuration and change the DNS server handed out by DHCP to the NetSpecter/AdGuard address:
 
 ```text
-192.168.1.10
+YOUR-NETSPECTER-IP
 ```
 
-Replace that with your NetSpecter `br0` address.
+For example, on the example network this is `192.168.1.10`.
 
 Reconnect client devices, or renew their DHCP lease, so they receive the new DNS server.
 
@@ -226,19 +255,19 @@ Reconnect client devices, or renew their DHCP lease, so they receive the new DNS
 From a computer on the LAN, test a DNS lookup through AdGuard:
 
 ```bash
-nslookup google.com 192.168.1.10
+nslookup google.com YOUR-NETSPECTER-IP
 ```
 
 In AdGuard, open **Query Log**. You should see the request and the IP address of the client device that made it.
 
-If no requests appear, confirm the client or router is actually using `192.168.1.10` as its DNS server.
+If no requests appear, confirm the client or router is actually using your NetSpecter IP as its DNS server.
 
 ## 11. Connect AdGuard To NetSpecter
 
 Open NetSpecter:
 
 ```text
-http://192.168.1.10:5050
+http://YOUR-NETSPECTER-IP:5050
 ```
 
 Create the NetSpecter admin login when prompted, then open **Settings**.
@@ -247,8 +276,8 @@ Enter:
 
 | NetSpecter Setting | Value |
 | --- | --- |
-| Gateway IP | `192.168.1.1` |
-| LAN Prefix | `192.168.1.` |
+| Gateway IP | Your gateway/router IP, for example `192.168.1.1` |
+| LAN Prefix | Your LAN prefix, for example `192.168.1.` |
 | Live Traffic Interface | `br0` |
 | Fallback Traffic Interface | `br0` |
 | AdGuard URL | `http://127.0.0.1` |
@@ -256,7 +285,7 @@ Enter:
 | AdGuard Password | The AdGuard admin password you created |
 | ntopng URL | `http://127.0.0.1:3000` |
 
-Use your own LAN values in place of the example IP addresses. `127.0.0.1` is correct for AdGuard and ntopng when they are installed on the same NetSpecter appliance.
+`127.0.0.1` is correct for AdGuard and ntopng when they are installed on the same NetSpecter appliance.
 
 Click **Save Settings**.
 
@@ -271,9 +300,9 @@ systemctl status AdGuardHome ntopng netspecter-web netspecter-collector --no-pag
 Open each page:
 
 ```text
-AdGuard:    http://192.168.1.10
-ntopng:     http://192.168.1.10:3000
-NetSpecter: http://192.168.1.10:5050
+AdGuard:    http://YOUR-NETSPECTER-IP
+ntopng:     http://YOUR-NETSPECTER-IP:3000
+NetSpecter: http://YOUR-NETSPECTER-IP:5050
 ```
 
 The installation is working when:
