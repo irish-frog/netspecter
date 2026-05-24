@@ -107,6 +107,8 @@ apt install -y bridge-utils
 nano /etc/network/interfaces
 ```
 
+The following is file content to paste into `/etc/network/interfaces`; it is not a list of commands to run at the Bash prompt.
+
 This configuration matches a working NetSpecter bridge layout, using an example appliance address of `192.168.1.10`, a gateway at `192.168.1.1`, and physical interfaces `enp1s0` and `enp2s0`:
 
 ```ini
@@ -232,6 +234,8 @@ On a new appliance, AdGuard Home first opens its setup wizard on port `3000`. Op
 http://SERVER-IP:3000
 ```
 
+Follow the step-by-step [AdGuard Home Setup Guide](ADGUARD-SETUP.md) during this stage.
+
 Set the AdGuard web/admin port to `80`, leaving port `3000` available for ntopng. Once AdGuard setup is complete, rerun the installer:
 
 ```bash
@@ -266,99 +270,11 @@ Service passwords are encrypted in `/etc/netspecter/config.json` after saving Se
 
 ---
 
-## Importing AdGuard Settings Safely
+## AdGuard Home Setup
 
-NetSpecter includes a safe AdGuard Home YAML template:
+Set up AdGuard through its web interface rather than overwriting its YAML configuration. The full beginner guide, including the recommended DNS, query-log and filter settings for NetSpecter, is here:
 
-```text
-adguard/AdGuardHome.yaml.example
-```
-
-This template contains useful DNS, query-log, statistics, filter and client-detection defaults. It deliberately does not contain your admin login, real LAN address or persistent clients.
-
-During install, NetSpecter renders:
-
-```text
-/etc/netspecter/adguard/AdGuardHome.yaml.generated
-```
-
-Render it with your actual NetSpecter IP and LAN range:
-
-```bash
-NETSPECTER_SERVER_IP=192.168.1.10 \
-NETSPECTER_LAN_CIDR=192.168.1.0/24 \
-/opt/netspecter/scripts/render-adguard-template.sh
-```
-
-Replace these example values with your appliance IP and LAN CIDR.
-
-### Recommended Import Method
-
-After the AdGuard browser wizard has created your administrator account, back up its live configuration:
-
-```bash
-cp -a /opt/AdGuardHome/AdGuardHome.yaml /opt/AdGuardHome/AdGuardHome.yaml.before-netspecter
-```
-
-Open the generated template and the live configuration:
-
-```bash
-nano /etc/netspecter/adguard/AdGuardHome.yaml.generated
-nano /opt/AdGuardHome/AdGuardHome.yaml
-```
-
-Merge the following sections from the generated file into the live AdGuard file:
-
-```text
-querylog:
-statistics:
-filters:
-whitelist_filters:
-user_rules:
-filtering:
-clients:
-```
-
-Keep these values from the live AdGuard file:
-
-```text
-users:
-bind_host / bind_port
-dns bind_hosts / port
-tls:
-dhcp:
-persistent clients
-```
-
-Most importantly, do not overwrite the live `users:` block. That block contains the AdGuard administrator login created in the setup wizard.
-
-Restart AdGuard and check it:
-
-```bash
-systemctl restart AdGuardHome
-systemctl status AdGuardHome --no-pager
-journalctl -u AdGuardHome -n 50 --no-pager
-```
-
-### Full YAML Replacement
-
-Full replacement is only suitable for a new setup where you deliberately preserve authentication and any site-specific values. Make a backup first:
-
-```text
-/opt/AdGuardHome/AdGuardHome.yaml.before-netspecter
-```
-
-Then stop AdGuard, copy the generated file into place, and edit it before restarting:
-
-```bash
-systemctl stop AdGuardHome
-cp /etc/netspecter/adguard/AdGuardHome.yaml.generated /opt/AdGuardHome/AdGuardHome.yaml
-nano /opt/AdGuardHome/AdGuardHome.yaml
-chmod 600 /opt/AdGuardHome/AdGuardHome.yaml
-systemctl start AdGuardHome
-```
-
-Before starting AdGuard, copy the `users:` block from your backup into the replacement YAML and confirm the bind ports, LAN CIDR and DNS settings. Never commit the live AdGuard YAML or its backup to GitHub.
+[AdGuard Home Setup Guide](ADGUARD-SETUP.md)
 
 ---
 
