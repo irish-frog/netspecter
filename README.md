@@ -70,9 +70,9 @@ chmod +x install.sh
 
 The installer:
 
-- Installs system packages
-- Installs ntopng using the ntop wget/deb repository method
-- Installs AdGuard Home using the wget installer method if missing
+- Updates Debian and installs initial setup tools
+- Installs AdGuard Home first and pauses for its browser setup
+- Installs ntopng from signed stable Debian 12 `x64/` and `all/` repositories on the second run
 - Installs NetSpecter to `/opt/netspecter`
 - Creates config in `/etc/netspecter`
 - Stores runtime data in `/var/lib/netspecter`
@@ -82,7 +82,20 @@ The installer:
 
 ## First Run
 
-Open:
+On a new appliance, AdGuard Home first opens its setup wizard on port `3000`. Open:
+
+```text
+http://SERVER-IP:3000
+```
+
+Set the AdGuard web/admin port to `80`, leaving port `3000` available for ntopng. Once AdGuard setup is complete, rerun the installer:
+
+```bash
+cd /root/netspecter
+./install.sh
+```
+
+The second run installs ntopng and NetSpecter. Then open NetSpecter:
 
 ```text
 http://SERVER-IP:5050
@@ -141,11 +154,7 @@ NETSPECTER_LAN_CIDR=192.168.1.0/24 \
 /opt/netspecter/scripts/render-adguard-template.sh
 ```
 
-To allow the installer to apply the generated template on a brand-new AdGuard install:
-
-```bash
-APPLY_ADGUARD_TEMPLATE=1 ./install.sh
-```
+The installer does not overwrite the configuration created by the AdGuard setup wizard. Use the generated file as a safe reference when adding filtering and query-log options to the live configuration.
 
 The installer will not overwrite an existing:
 
