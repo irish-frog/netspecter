@@ -68,7 +68,7 @@ if [ -f /etc/apt/sources.list.d/debian.sources ]; then
   sed -i '/^Components:/ { /contrib/! s/$/ contrib/; }' /etc/apt/sources.list.d/debian.sources
 fi
 if [ -f /etc/apt/sources.list ]; then
-  sed -i -E '/^deb(-src)? .* main( |$)/ { / contrib/! s/ main( |$)/ main contrib\2/; }' /etc/apt/sources.list
+  sed -i -E '/^deb(-src)? / { /[[:space:]]contrib([[:space:]]|$)/! s/[[:space:]]main([[:space:]]|$)/ main contrib /; }' /etc/apt/sources.list
 fi
 apt update
 wget -q https://packages.ntop.org/apt/ntop.key -O /tmp/ntop.key
