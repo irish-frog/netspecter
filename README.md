@@ -323,22 +323,9 @@ systemctl list-timers | grep netspecter
 
 ---
 
-## NetSpecter Bridge Settings
-
-After `br0` is working and NetSpecter is installed, configure Settings:
-
-```text
-Live Traffic Interface: br0
-Fallback Traffic Interface: br0
-Gateway IP: your router IP
-LAN Prefix: your LAN prefix
-```
-
----
-
 ## Updating
 
-From a cloned repository:
+To update NetSpecter after it has already been installed:
 
 ```bash
 cd /root/netspecter
@@ -346,7 +333,7 @@ git pull
 ./install.sh
 ```
 
-The installer preserves existing:
+Rerunning the installer updates application files and services while preserving your live configuration:
 
 ```text
 /etc/netspecter/config.json
