@@ -45,6 +45,98 @@ Bridge mode is recommended for best traffic visibility. DNS analytics require cl
 
 ---
 
+## Before Installation: Network Interfaces And Bridge
+
+NetSpecter is designed to sit inline between the router and the LAN switch. A transparent bridge requires two physical Ethernet interfaces:
+
+```text
+Router / Gateway ---- NetSpecter port 1 | br0 | NetSpecter port 2 ---- LAN Switch
+```
+
+Do the bridge change from a local keyboard/monitor or out-of-band console. Changing the interface carrying an SSH session can disconnect you.
+
+### Find Your Network Interface Names
+
+Debian interface names vary by hardware. Identify them before creating `br0`:
+
+```bash
+ip -br link
+ip -br addr
+ip route
+```
+
+Example output may show:
+
+```text
+lo               UNKNOWN        127.0.0.1/8
+enp1s0           UP
+enp2s0           UP
+```
+
+Determine which cable is router-facing and which is switch-facing. One simple method is to unplug one cable briefly and rerun:
+
+```bash
+ip -br link
+```
+
+The interface that changes to `DOWN` is the disconnected port. Write down both names before continuing.
+
+### Create The Bridge
+
+Back up the Debian network configuration:
+
+```bash
+cp -a /etc/network/interfaces /etc/network/interfaces.before-netspecter
+apt install -y bridge-utils
+nano /etc/network/interfaces
+```
+
+Example configuration for a NetSpecter appliance at `192.168.1.10`, with a router at `192.168.1.1` and physical interfaces `enp1s0` and `enp2s0`:
+
+```ini
+auto lo
+iface lo inet loopback
+
+auto br0
+iface br0 inet static
+    address 192.168.1.10/24
+    gateway 192.168.1.1
+    dns-nameservers 9.9.9.9 1.1.1.1
+    bridge_ports enp1s0 enp2s0
+    bridge_stp off
+    bridge_fd 0
+    bridge_maxwait 0
+
+iface enp1s0 inet manual
+iface enp2s0 inet manual
+```
+
+Replace the IPs and physical interface names for your network. Only `br0` should have the appliance IP address; the bridged Ethernet ports remain `manual`.
+
+Reboot to apply the network configuration:
+
+```bash
+reboot
+```
+
+After reboot, verify the bridge:
+
+```bash
+ip -br addr show br0
+bridge link
+ip route
+ping -c 3 1.1.1.1
+```
+
+Expected results:
+
+- `br0` has the NetSpecter appliance IP address.
+- Both physical ports appear as bridge members.
+- The default route points to your gateway through `br0`.
+- LAN devices continue to access the router through the appliance.
+
+---
+
 ## Supported OS
 
 Recommended:
@@ -122,7 +214,7 @@ Service passwords are encrypted in `/etc/netspecter/config.json` after saving Se
 
 ---
 
-## AdGuard Home Template
+## Importing AdGuard Settings Safely
 
 NetSpecter includes a safe AdGuard Home YAML template:
 
@@ -130,7 +222,7 @@ NetSpecter includes a safe AdGuard Home YAML template:
 adguard/AdGuardHome.yaml.example
 ```
 
-This template contains most useful DNS/querylog/filtering defaults, but does not include private deployment values such as your real LAN IP, user password hash, or persistent clients.
+This template contains useful DNS, query-log, statistics, filter and client-detection defaults. It deliberately does not contain your admin login, real LAN address or persistent clients.
 
 During install, NetSpecter renders:
 
@@ -138,15 +230,7 @@ During install, NetSpecter renders:
 /etc/netspecter/adguard/AdGuardHome.yaml.generated
 ```
 
-Review it before applying.
-
-To render manually:
-
-```bash
-/opt/netspecter/scripts/render-adguard-template.sh
-```
-
-To provide explicit values:
+Render it with your actual NetSpecter IP and LAN range:
 
 ```bash
 NETSPECTER_SERVER_IP=192.168.1.10 \
@@ -154,15 +238,75 @@ NETSPECTER_LAN_CIDR=192.168.1.0/24 \
 /opt/netspecter/scripts/render-adguard-template.sh
 ```
 
-The installer does not overwrite the configuration created by the AdGuard setup wizard. Use the generated file as a safe reference when adding filtering and query-log options to the live configuration.
+Replace these example values with your appliance IP and LAN CIDR.
 
-The installer will not overwrite an existing:
+### Recommended Import Method
 
-```text
-/opt/AdGuardHome/AdGuardHome.yaml
+After the AdGuard browser wizard has created your administrator account, back up its live configuration:
+
+```bash
+cp -a /opt/AdGuardHome/AdGuardHome.yaml /opt/AdGuardHome/AdGuardHome.yaml.before-netspecter
 ```
 
-This is intentional. Keep live AdGuard configs private.
+Open the generated template and the live configuration:
+
+```bash
+nano /etc/netspecter/adguard/AdGuardHome.yaml.generated
+nano /opt/AdGuardHome/AdGuardHome.yaml
+```
+
+Merge the following sections from the generated file into the live AdGuard file:
+
+```text
+querylog:
+statistics:
+filters:
+whitelist_filters:
+user_rules:
+filtering:
+clients:
+```
+
+Keep these values from the live AdGuard file:
+
+```text
+users:
+bind_host / bind_port
+dns bind_hosts / port
+tls:
+dhcp:
+persistent clients
+```
+
+Most importantly, do not overwrite the live `users:` block. That block contains the AdGuard administrator login created in the setup wizard.
+
+Restart AdGuard and check it:
+
+```bash
+systemctl restart AdGuardHome
+systemctl status AdGuardHome --no-pager
+journalctl -u AdGuardHome -n 50 --no-pager
+```
+
+### Full YAML Replacement
+
+Full replacement is only suitable for a new setup where you deliberately preserve authentication and any site-specific values. Make a backup first:
+
+```text
+/opt/AdGuardHome/AdGuardHome.yaml.before-netspecter
+```
+
+Then stop AdGuard, copy the generated file into place, and edit it before restarting:
+
+```bash
+systemctl stop AdGuardHome
+cp /etc/netspecter/adguard/AdGuardHome.yaml.generated /opt/AdGuardHome/AdGuardHome.yaml
+nano /opt/AdGuardHome/AdGuardHome.yaml
+chmod 600 /opt/AdGuardHome/AdGuardHome.yaml
+systemctl start AdGuardHome
+```
+
+Before starting AdGuard, copy the `users:` block from your backup into the replacement YAML and confirm the bind ports, LAN CIDR and DNS settings. Never commit the live AdGuard YAML or its backup to GitHub.
 
 ---
 
@@ -230,35 +374,9 @@ systemctl list-timers | grep netspecter
 
 ---
 
-## Bridge Setup
+## NetSpecter Bridge Settings
 
-Identify interfaces:
-
-```bash
-ip -br addr
-```
-
-Example `/etc/network/interfaces`:
-
-```ini
-auto lo
-iface lo inet loopback
-
-auto br0
-iface br0 inet static
-    address 192.168.1.10/24
-    gateway 192.168.1.1
-    dns-nameservers 9.9.9.9 1.1.1.1
-    bridge_ports enp1s0 enp2s0
-    bridge_stp off
-    bridge_fd 0
-    bridge_maxwait 0
-
-iface enp1s0 inet manual
-iface enp2s0 inet manual
-```
-
-Then configure NetSpecter Settings:
+After `br0` is working and NetSpecter is installed, configure Settings:
 
 ```text
 Live Traffic Interface: br0

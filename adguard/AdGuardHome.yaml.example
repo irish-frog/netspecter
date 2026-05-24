@@ -1,8 +1,9 @@
 # NetSpecter AdGuard Home template
 #
 # This is intentionally generic. Do not commit your live AdGuardHome.yaml.
-# Copy to /opt/AdGuardHome/AdGuardHome.yaml, then finish first-run setup
-# in the AdGuard UI and NetSpecter Settings.
+# Render this file after installation, then merge its DNS/filter/query-log
+# sections into the live AdGuard configuration as documented in README.md.
+# Do not replace a configured live file without preserving its users block.
 #
 # Replace these placeholders after install:
 #   __SERVER_IP__      NetSpecter/AdGuard server IP, e.g. 192.168.1.10
