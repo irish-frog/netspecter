@@ -91,7 +91,7 @@ apt install -y bridge-utils
 nano /etc/network/interfaces
 ```
 
-Example configuration for a NetSpecter appliance at `192.168.1.10`, with a router at `192.168.1.1` and physical interfaces `enp1s0` and `enp2s0`:
+This configuration matches a working NetSpecter bridge layout, using an example appliance address of `192.168.1.10`, a gateway at `192.168.1.1`, and physical interfaces `enp1s0` and `enp2s0`:
 
 ```ini
 auto lo
@@ -101,7 +101,7 @@ auto br0
 iface br0 inet static
     address 192.168.1.10/24
     gateway 192.168.1.1
-    dns-nameservers 9.9.9.9 1.1.1.1
+    dns-nameservers 192.168.1.1
     bridge_ports enp1s0 enp2s0
     bridge_stp off
     bridge_fd 0
@@ -112,6 +112,36 @@ iface enp2s0 inet manual
 ```
 
 Replace the IPs and physical interface names for your network. Only `br0` should have the appliance IP address; the bridged Ethernet ports remain `manual`.
+
+### Keep Bridge Ports Active On Reboot
+
+The bridge configuration above is sufficient for the two NICs inside the bridge:
+
+```ini
+auto br0
+    bridge_ports enp1s0 enp2s0
+```
+
+When Debian brings up `br0` during boot, it also brings `enp1s0` and `enp2s0` into the bridge. On a working NetSpecter system, verification should show:
+
+```text
+enp1s0  UP ... master br0 state forwarding
+enp2s0  UP ... master br0 state forwarding
+br0     UP ... 192.168.1.10/24
+```
+
+Do not give `enp1s0` or `enp2s0` their own IP addresses. The address belongs on `br0`.
+
+If the appliance has an extra unused NIC that you intentionally want raised at boot, for example `enp4s0`, add it separately without placing it in the bridge:
+
+```ini
+auto enp4s0
+iface enp4s0 inet manual
+    up ip link set dev enp4s0 up
+    down ip link set dev enp4s0 down
+```
+
+Only add that block for a NIC you need active. It is not required for the two bridge ports and it does not make `enp4s0` part of monitored bridge traffic.
 
 Reboot to apply the network configuration:
 
@@ -132,6 +162,7 @@ Expected results:
 
 - `br0` has the NetSpecter appliance IP address.
 - Both physical ports appear as bridge members.
+- Both physical bridge ports show `state forwarding` after reboot.
 - The default route points to your gateway through `br0`.
 - LAN devices continue to access the router through the appliance.
 
