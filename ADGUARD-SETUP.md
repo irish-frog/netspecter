@@ -240,61 +240,10 @@ In AdGuard, open **Query Log**. You should see the request and the IP address of
 
 If no requests appear, confirm the client or router is actually using your NetSpecter IP as its DNS server.
 
-## 9. Enter AdGuard Details In NetSpecter
+## 9. Continue The NetSpecter Installation
 
-Open NetSpecter:
+AdGuard setup is complete when its **Query Log** shows requests from LAN devices.
 
-```text
-http://YOUR-NETSPECTER-IP:5050
-```
+Return to the main installation guide and continue with the second installer run, which installs ntopng and NetSpecter:
 
-Create the NetSpecter admin login when prompted, then open **Settings**.
-
-Enter:
-
-| NetSpecter Setting | Value |
-| --- | --- |
-| Gateway IP | Your gateway/router IP, for example `192.168.1.1` |
-| LAN Prefix | Your LAN prefix, for example `192.168.1.` |
-| Live Traffic Interface | `br0` |
-| Fallback Traffic Interface | `br0` |
-| AdGuard URL | `http://127.0.0.1` |
-| AdGuard User | The AdGuard admin username you created |
-| AdGuard Password | The AdGuard admin password you created |
-| ntopng URL | `http://127.0.0.1:3000` |
-
-`127.0.0.1` is correct for AdGuard and ntopng when they are installed on the same NetSpecter appliance.
-
-Click **Save Settings**.
-
-## 10. Final AdGuard Checks
-
-On the NetSpecter Debian terminal, run:
-
-```bash
-systemctl status AdGuardHome ntopng netspecter-web netspecter-collector --no-pager
-```
-
-Open each page:
-
-```text
-AdGuard:    http://YOUR-NETSPECTER-IP
-ntopng:     http://YOUR-NETSPECTER-IP:3000
-NetSpecter: http://YOUR-NETSPECTER-IP:5050
-```
-
-The installation is working when:
-
-- AdGuard Query Log shows client requests.
-- NetSpecter displays DNS queries and applications after devices browse the internet.
-- NetSpecter displays traffic collected from `br0`.
-
-## Keep The Live AdGuard File Private
-
-AdGuard stores its administrator account and site-specific values in:
-
-```text
-/opt/AdGuardHome/AdGuardHome.yaml
-```
-
-Do not upload that live file to GitHub. The YAML example in this repository is only a reference for the settings documented above.
+[Return to the NetSpecter README](README.md#first-run)
