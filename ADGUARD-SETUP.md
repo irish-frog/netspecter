@@ -66,85 +66,106 @@ cd /root/netspecter
 
 The second run installs ntopng, Redis, NetSpecter and its systemd services.
 
-## 4. Configure DNS Settings To Match The Working NetSpecter Setup
+## 4. Set The DNS Servers
 
-In AdGuard Home, open **Settings > DNS settings**.
+Log into AdGuard:
 
-### Upstream DNS servers
+```text
+http://192.168.1.10
+```
 
-In **Upstream DNS servers**, remove the default entries and enter:
+Go to **Settings > DNS settings**.
+
+### Upstream DNS Servers
+
+Find **Upstream DNS servers**. Remove what is in the box and paste these two lines:
 
 ```text
 https://1.1.1.1/dns-query
 https://9.9.9.9/dns-query
 ```
 
-### Bootstrap DNS servers
-
-In **Bootstrap DNS servers**, enter:
+Set **Upstream mode** to:
 
 ```text
-1.1.1.1
-9.9.9.9
+Parallel requests
 ```
 
-### Fallback DNS Servers
+### Fallback And Bootstrap Servers
 
-In **Fallback DNS servers**, enter:
+Find **Fallback DNS servers** and paste:
 
 ```text
 9.9.9.9
 1.1.1.1
 ```
 
-### Private Reverse DNS Servers
+Find **Bootstrap DNS servers** and paste:
 
-In the private reverse DNS / local PTR upstream field, enter your gateway address:
+```text
+1.1.1.1
+9.9.9.9
+```
+
+### Local Device Names
+
+Find the option for **Private reverse DNS servers** or **Private PTR resolvers**.
+
+Enable the option to use private reverse DNS resolvers, then enter the address of your router:
 
 ```text
 192.168.1.1
 ```
 
-This uses the router to resolve local device names. Replace it with your actual gateway IP.
-
-### DNS Options
-
-Set the following options:
-
-| Setting | Recommended value |
-| --- | --- |
-| Upstream mode | Parallel requests |
-| Rate limit | `20` |
-| DNS cache | Enabled, `8 MB` if a size field is shown |
-| Optimistic caching | Enabled |
-| DNSSEC | Enabled |
-| Disable IPv6 / AAAA responses | Enabled |
-| Use private reverse DNS resolvers | Enabled |
-| Blocking mode | Default |
+Use your own gateway address if it is different. This helps AdGuard show local device names when your router knows them.
 
 Click **Save**.
 
-## 5. Configure Query Log And Statistics
+## 5. Set DNS Safety And Cache Options
 
-NetSpecter reads AdGuard activity to show domains, applications and blocked queries.
+Still on **Settings > DNS settings**, set these options:
 
-Open the AdGuard general or query-log settings page and set:
-
-| Setting | Recommended value |
+| Option | Set To |
 | --- | --- |
-| Query log | Enabled |
+| Rate limit | `20` |
+| Enable DNS cache | On |
+| Cache size | `8388608` bytes / `8 MB` |
+| Optimistic caching | On |
+| Enable DNSSEC | On |
+| Disable resolution of IPv6 addresses / AAAA | On |
+| Blocking mode | Default |
+
+Click **Save** after changing the options.
+
+The working NetSpecter appliance blocks AAAA answers. Leave this on only if you do not use IPv6 on your LAN.
+
+## 6. Set Query Log And Statistics History
+
+NetSpecter needs the AdGuard query log so it can show device DNS usage, domains and applications.
+
+Go to **Settings > General settings** and set:
+
+| Option | Set To |
+| --- | --- |
+| Enable query log | On |
 | Query log retention | `90 days` |
-| Statistics | Enabled |
+| Enable statistics | On |
 | Statistics retention | `1 day` |
-| Anonymize client IP | Disabled |
+| Anonymize client IP addresses | Off |
 
-Do not anonymize client IP addresses if you want NetSpecter to associate DNS use with individual devices.
+Click **Save**.
 
-## 6. Add The Enabled Filter Lists
+Leave **Anonymize client IP addresses** off. If it is enabled, NetSpecter cannot reliably show which device made a DNS request.
 
-Open **Filters > DNS blocklists** and ensure these lists are enabled:
+## 7. Add The Blocklists
 
-| Filter list | URL |
+Go to **Filters > DNS blocklists**.
+
+The **AdGuard DNS filter** may already be present. If it is not shown, add it first. Then choose **Add blocklist > Add a custom list** and add the remaining lists one at a time.
+
+Use these five enabled lists:
+
+| Name | URL |
 | --- | --- |
 | AdGuard DNS filter | `https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt` |
 | Phishing URL Blocklist (PhishTank and OpenPhish) | `https://adguardteam.github.io/HostlistsRegistry/assets/filter_30.txt` |
@@ -152,54 +173,67 @@ Open **Filters > DNS blocklists** and ensure these lists are enabled:
 | ShadowWhisperer's Malware List | `https://adguardteam.github.io/HostlistsRegistry/assets/filter_42.txt` |
 | Malicious URL Blocklist (URLHaus) | `https://adguardteam.github.io/HostlistsRegistry/assets/filter_11.txt` |
 
-Click **Check for updates** after adding them.
+For each list:
 
-## 7. Set Filtering Options
+1. Select **Add blocklist**.
+2. Choose **Add a custom list** if it is not available in the built-in list.
+3. Paste the URL.
+4. Enter the matching name.
+5. Ensure the list is enabled.
 
-In filtering/security settings, use:
+When all five are shown and enabled, click **Check for updates**.
 
-| Setting | Recommended value |
+## 8. Set Filtering Options
+
+Go to **Settings > General settings** or the filtering settings screen, depending on the AdGuard version.
+
+Set:
+
+| Option | Set To |
 | --- | --- |
-| DNS filtering / protection | Enabled |
-| Blocked services | None selected |
-| Safe Search | Disabled |
-| Parental control | Disabled |
-| Safe Browsing | Disabled |
+| Protection / DNS filtering | On |
 | Filter update interval | `24 hours` |
+| Safe Browsing | Off |
+| Parental Control | Off |
+| Safe Search | Off |
+| Blocked services | None |
 
-The working NetSpecter setup does not require custom filtering allow rules. Leave **Custom filtering rules** empty unless your own network needs exceptions.
+Go to **Filters > Custom filtering rules**. Leave this page empty for the same setup as the working appliance.
 
-## 8. Leave DHCP Disabled In AdGuard
+## 9. Leave DHCP On The Router
 
-The working setup uses the router for DHCP and AdGuard only for DNS. In **Settings > DHCP settings**, leave the AdGuard DHCP server disabled.
+Go to **Settings > DHCP settings**.
 
-Your router should continue assigning client IP addresses. In the router's DHCP settings, set the DNS server provided to clients to the NetSpecter/AdGuard address:
+Leave **DHCP server** disabled in AdGuard. In this setup:
+
+```text
+Router:  gives devices IP addresses
+AdGuard: provides DNS filtering and query history
+```
+
+Now open your router configuration and change the DNS server handed out by DHCP to the NetSpecter/AdGuard address:
 
 ```text
 192.168.1.10
 ```
 
-## 9. Make Devices Use AdGuard DNS
+Replace that with your NetSpecter `br0` address.
 
-AdGuard can only report client DNS activity when your devices actually use it for DNS.
+Reconnect client devices, or renew their DHCP lease, so they receive the new DNS server.
 
-Recommended method: set the DNS server handed out by your router's DHCP service to:
+## 10. Check That AdGuard Is Receiving Queries
 
-```text
-192.168.1.10
-```
-
-Then reconnect client devices or renew their DHCP leases.
-
-To test DNS from another LAN device:
+From a computer on the LAN, test a DNS lookup through AdGuard:
 
 ```bash
 nslookup google.com 192.168.1.10
 ```
 
-Queries should begin appearing in the AdGuard query log.
+In AdGuard, open **Query Log**. You should see the request and the IP address of the client device that made it.
 
-## 10. Configure NetSpecter To Read AdGuard
+If no requests appear, confirm the client or router is actually using `192.168.1.10` as its DNS server.
+
+## 11. Connect AdGuard To NetSpecter
 
 Open NetSpecter:
 
@@ -207,30 +241,34 @@ Open NetSpecter:
 http://192.168.1.10:5050
 ```
 
-After creating the NetSpecter administrator login, open **Settings** and set:
+Create the NetSpecter admin login when prompted, then open **Settings**.
 
-| Setting | Recommended value |
+Enter:
+
+| NetSpecter Setting | Value |
 | --- | --- |
 | Gateway IP | `192.168.1.1` |
 | LAN Prefix | `192.168.1.` |
 | Live Traffic Interface | `br0` |
 | Fallback Traffic Interface | `br0` |
 | AdGuard URL | `http://127.0.0.1` |
-| AdGuard User | Your AdGuard administrator username |
-| AdGuard Password | Your AdGuard administrator password |
+| AdGuard User | The AdGuard admin username you created |
+| AdGuard Password | The AdGuard admin password you created |
 | ntopng URL | `http://127.0.0.1:3000` |
 
-`127.0.0.1` is recommended for AdGuard and ntopng here because all three services run on the same appliance.
+Use your own LAN values in place of the example IP addresses. `127.0.0.1` is correct for AdGuard and ntopng when they are installed on the same NetSpecter appliance.
 
-## 11. Confirm Everything Works
+Click **Save Settings**.
 
-On Debian, check the services:
+## 12. Final Checks
+
+On the NetSpecter Debian terminal, run:
 
 ```bash
 systemctl status AdGuardHome ntopng netspecter-web netspecter-collector --no-pager
 ```
 
-Open:
+Open each page:
 
 ```text
 AdGuard:    http://192.168.1.10
@@ -238,18 +276,18 @@ ntopng:     http://192.168.1.10:3000
 NetSpecter: http://192.168.1.10:5050
 ```
 
-Confirm:
+The installation is working when:
 
-- AdGuard shows queries from LAN devices.
-- NetSpecter displays DNS queries and applications after activity occurs.
-- NetSpecter shows traffic collected on `br0`.
+- AdGuard Query Log shows client requests.
+- NetSpecter displays DNS queries and applications after devices browse the internet.
+- NetSpecter displays traffic collected from `br0`.
 
-## Keeping Your Configuration Private
+## Keep The Live AdGuard File Private
 
-AdGuard stores your live administrator details and site-specific configuration in:
+AdGuard stores its administrator account and site-specific values in:
 
 ```text
 /opt/AdGuardHome/AdGuardHome.yaml
 ```
 
-Do not upload this file to GitHub. The repository YAML file is only a safe reference template and is not required for setup.
+Do not upload that live file to GitHub. The YAML example in this repository is only a reference for the settings documented above.
