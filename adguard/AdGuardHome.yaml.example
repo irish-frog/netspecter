@@ -1,9 +1,9 @@
 # NetSpecter AdGuard Home template
 #
 # This is intentionally generic. Do not commit your live AdGuardHome.yaml.
-# Render this file after installation, then merge its DNS/filter/query-log
-# sections into the live AdGuard configuration as documented in README.md.
-# Do not replace a configured live file without preserving its users block.
+# Reference values for users who want to inspect the underlying settings.
+# Follow ADGUARD-SETUP.md to configure AdGuard Home through its web interface.
+# Do not replace a configured live file or commit your live YAML.
 #
 # Replace these placeholders after install:
 #   __SERVER_IP__      NetSpecter/AdGuard server IP, e.g. 192.168.1.10
@@ -18,7 +18,7 @@ auth_attempts: 5
 block_auth_min: 15
 http_proxy: ""
 language: ""
-theme: auto
+theme: dark
 debug_pprof: false
 web_session_ttl: 720
 dns:
@@ -32,14 +32,16 @@ dns:
   ratelimit_whitelist: []
   refuse_any: true
   upstream_dns:
-    - https://dns.quad9.net/dns-query
-    - https://cloudflare-dns.com/dns-query
+    - https://1.1.1.1/dns-query
+    - https://9.9.9.9/dns-query
   upstream_dns_file: ""
   bootstrap_dns:
+    - 1.1.1.1
+    - 9.9.9.9
+  fallback_dns:
     - 9.9.9.9
     - 1.1.1.1
-  fallback_dns: []
-  all_servers: false
+  all_servers: true
   fastest_addr: false
   fastest_timeout: 1s
   allowed_clients: []
@@ -51,13 +53,13 @@ dns:
   trusted_proxies:
     - 127.0.0.0/8
     - ::1/128
-  cache_size: 4194304
+  cache_size: 8388608
   cache_ttl_min: 0
   cache_ttl_max: 0
   cache_optimistic: true
   bogus_nxdomain: []
-  aaaa_disabled: false
-  enable_dnssec: false
+  aaaa_disabled: true
+  enable_dnssec: true
   edns_client_subnet:
     custom_ip: ""
     enabled: false
@@ -67,9 +69,8 @@ dns:
   ipset: []
   ipset_file: ""
   bootstrap_prefer_ipv6: false
-  upstream_timeout: 10s
-  private_networks:
-    - __LAN_CIDR__
+  upstream_timeout: 3s
+  private_networks: []
   use_private_ptr_resolvers: true
   local_ptr_upstreams:
     - __SERVER_IP__
@@ -97,12 +98,12 @@ tls:
 querylog:
   enabled: true
   file_enabled: true
-  interval: 72h
+  interval: 2160h
   size_memory: 1000
   ignored: []
 statistics:
   enabled: true
-  interval: 168h
+  interval: 24h
   ignored: []
 filters:
   - enabled: true
@@ -110,13 +111,23 @@ filters:
     name: AdGuard DNS filter
     id: 1
   - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
-    name: AdAway Default Blocklist
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_30.txt
+    name: Phishing URL Blocklist (PhishTank and OpenPhish)
     id: 2
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_12.txt
+    name: Dandelion Sprout's Anti-Malware List
+    id: 3
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_42.txt
+    name: ShadowWhisperer's Malware List
+    id: 4
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_11.txt
+    name: Malicious URL Blocklist (URLHaus)
+    id: 5
 whitelist_filters: []
-user_rules:
-  - '@@||dns.msftncsi.com^'
-  - '@@||connectivitycheck.gstatic.com^'
+user_rules: []
 dhcp:
   enabled: false
   interface_name: ""
