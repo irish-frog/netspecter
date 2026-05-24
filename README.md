@@ -81,6 +81,22 @@ ip -br link
 
 The interface that changes to `DOWN` is the disconnected port. Write down both names before continuing.
 
+For example, if your two connected interfaces are:
+
+```text
+enp4s0    router-facing port
+enp5s0    switch-facing port
+```
+
+then use those exact names in the bridge configuration:
+
+```ini
+    bridge_ports enp4s0 enp5s0
+
+iface enp4s0 inet manual
+iface enp5s0 inet manual
+```
+
 ### Create The Bridge
 
 Back up the Debian network configuration:
@@ -111,7 +127,12 @@ iface enp1s0 inet manual
 iface enp2s0 inet manual
 ```
 
-Replace the IPs and physical interface names for your network. Only `br0` should have the appliance IP address; the bridged Ethernet ports remain `manual`.
+Replace the IPs and physical interface names for your network:
+
+- Replace `enp1s0` with your router-facing NIC name.
+- Replace `enp2s0` with your switch-facing NIC name.
+- Replace those names in both `bridge_ports` and the `iface ... inet manual` lines.
+- Leave the appliance IP address on `br0` only; do not give either physical bridge port its own IP address.
 
 ### Keep Bridge Ports Active On Reboot
 
