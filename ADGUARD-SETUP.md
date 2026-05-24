@@ -44,18 +44,7 @@ Throughout this guide:
 - Replace `192.168.1.1` with **your gateway/router IP address**.
 - Replace `192.168.1.0/24` or `192.168.1.` with **your own LAN range/prefix**.
 
-## 1. Start The AdGuard Installer Stage
-
-From the cloned NetSpecter repository, run:
-
-```bash
-cd /root/netspecter
-./install.sh
-```
-
-On a new installation the script installs AdGuard Home first, then pauses before installing ntopng. This matters because AdGuard uses port `3000` for its setup wizard, and ntopng uses port `3000` after setup is finished.
-
-## 2. Open The AdGuard Setup Wizard
+## 1. Complete The AdGuard Setup Wizard
 
 From a browser on your LAN, open:
 
@@ -84,18 +73,7 @@ http://YOUR-NETSPECTER-IP
 
 In the AdGuard appearance/general settings, select the **Dark** theme if you want the interface to match the working NetSpecter appliance.
 
-## 3. Finish The NetSpecter Install
-
-Return to the Debian terminal and run the installer a second time:
-
-```bash
-cd /root/netspecter
-./install.sh
-```
-
-The second run installs ntopng, Redis, NetSpecter and its systemd services.
-
-## 4. Set The DNS Servers
+## 2. Set The DNS Servers
 
 Log into AdGuard:
 
@@ -150,7 +128,7 @@ For example, on the example network this is `192.168.1.1`. This helps AdGuard sh
 
 Click **Save**.
 
-## 5. Set DNS Safety And Cache Options
+## 3. Set DNS Safety And Cache Options
 
 Still on **Settings > DNS settings**, set these options:
 
@@ -168,7 +146,7 @@ Click **Save** after changing the options.
 
 The working NetSpecter appliance blocks AAAA answers. Leave this on only if you do not use IPv6 on your LAN.
 
-## 6. Set Query Log And Statistics History
+## 4. Set Query Log And Statistics History
 
 NetSpecter needs the AdGuard query log so it can show device DNS usage, domains and applications.
 
@@ -186,7 +164,7 @@ Click **Save**.
 
 Leave **Anonymize client IP addresses** off. If it is enabled, NetSpecter cannot reliably show which device made a DNS request.
 
-## 7. Add The Blocklists
+## 5. Add The Blocklists
 
 Go to **Filters > DNS blocklists**.
 
@@ -212,7 +190,7 @@ For each list:
 
 When all five are shown and enabled, click **Check for updates**.
 
-## 8. Set Filtering Options
+## 6. Set Filtering Options
 
 Go to **Settings > General settings** or the filtering settings screen, depending on the AdGuard version.
 
@@ -229,7 +207,7 @@ Set:
 
 Go to **Filters > Custom filtering rules**. Leave this page empty for the same setup as the working appliance.
 
-## 9. Leave DHCP On The Router
+## 7. Leave DHCP On The Router
 
 Go to **Settings > DHCP settings**.
 
@@ -250,7 +228,7 @@ For example, on the example network this is `192.168.1.10`.
 
 Reconnect client devices, or renew their DHCP lease, so they receive the new DNS server.
 
-## 10. Check That AdGuard Is Receiving Queries
+## 8. Check That AdGuard Is Receiving Queries
 
 From a computer on the LAN, test a DNS lookup through AdGuard:
 
@@ -262,7 +240,7 @@ In AdGuard, open **Query Log**. You should see the request and the IP address of
 
 If no requests appear, confirm the client or router is actually using your NetSpecter IP as its DNS server.
 
-## 11. Connect AdGuard To NetSpecter
+## 9. Enter AdGuard Details In NetSpecter
 
 Open NetSpecter:
 
@@ -289,7 +267,7 @@ Enter:
 
 Click **Save Settings**.
 
-## 12. Final Checks
+## 10. Final AdGuard Checks
 
 On the NetSpecter Debian terminal, run:
 
