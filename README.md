@@ -268,47 +268,28 @@ Configure:
 
 Service passwords are encrypted in `/etc/netspecter/config.json` after saving Settings.
 
----
+### Point Your Router DNS To NetSpecter
 
-## AdGuard Home Setup
+For AdGuard and NetSpecter DNS analytics to work, devices on your LAN must use the NetSpecter appliance as their DNS server.
 
-Set up AdGuard through its web interface rather than overwriting its YAML configuration. The full beginner guide, including the recommended DNS, query-log and filter settings for NetSpecter, is here:
+Open your router's DHCP or LAN DNS settings and set the DNS server given to client devices to the IP address assigned to NetSpecter `br0`.
 
-[AdGuard Home Setup Guide](ADGUARD-SETUP.md)
-
----
-
-## Important Files
+Example:
 
 ```text
-/opt/netspecter/app.py
-/opt/netspecter/live_packet_collector.py
-/etc/netspecter/config.json
-/etc/netspecter/secret.key
-/etc/netspecter/session.key
-/var/lib/netspecter/netspecter.db
+NetSpecter br0 IP: 192.168.1.10
+Router DHCP DNS:   192.168.1.10
 ```
 
-Do not commit runtime files or secrets to GitHub.
+Use your own NetSpecter IP address, not the example above. After saving the router change, reconnect devices or renew their DHCP leases so they start using AdGuard DNS.
 
-The repository includes:
+You can confirm DNS is reaching NetSpecter from a LAN computer:
 
-```text
-config.example.json
-adguard/AdGuardHome.yaml.example
+```bash
+nslookup google.com YOUR-NETSPECTER-IP
 ```
 
-The repository ignores:
-
-```text
-config.json
-netspecter.db
-cache.json
-session.key
-secret.key
-AdGuardHome.yaml
-venv/
-```
+Requests should then appear in the AdGuard Query Log and in NetSpecter DNS/application views.
 
 ---
 
