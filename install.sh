@@ -39,12 +39,10 @@ fi
 
 if [ "$ADGUARD_JUST_INSTALLED" = "1" ] && port_3000_in_use; then
   echo ""
-  echo "=== AdGuard Home setup required before continuing ==="
-  echo "Open: http://SERVER-IP:3000"
+  echo "=== AdGuard Home setup available ==="
+  echo "After installation completes, open: http://SERVER-IP:3000"
   echo "In the AdGuard wizard, set its web/admin port to 80."
-  echo "After completing setup, rerun: ./install.sh"
-  echo "The second run installs NetSpecter."
-  exit 0
+  echo "Continuing with NetSpecter installation now."
 fi
 
 echo "[3/9] Installing NetSpecter base packages..."

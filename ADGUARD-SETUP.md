@@ -239,10 +239,10 @@ In AdGuard, open **Query Log**. You should see the request and the IP address of
 
 If no requests appear, confirm the client or router is actually using your NetSpecter IP as its DNS server.
 
-## 9. Continue The NetSpecter Installation
+## 9. Return To NetSpecter
 
 AdGuard setup is complete when its **Query Log** shows requests from LAN devices.
 
-Return to the main installation guide and continue with the second installer run, which installs NetSpecter:
+NetSpecter was installed during the same installer run. Return to the main installation guide to finish configuration:
 
 [Return to the NetSpecter README](README.md#first-run)

@@ -216,7 +216,7 @@ chmod +x install.sh
 The installer:
 
 - Updates Debian and installs initial setup tools
-- Installs AdGuard Home first and pauses for its browser setup
+- Installs AdGuard Home and continues while its browser setup remains available
 - Installs NetSpecter to `/opt/netspecter`
 - Creates config in `/etc/netspecter`
 - Stores runtime data in `/var/lib/netspecter`
@@ -232,16 +232,9 @@ On a new appliance, AdGuard Home first opens its setup wizard on port `3000`. Op
 http://SERVER-IP:3000
 ```
 
-Follow the step-by-step [AdGuard Home Setup Guide](ADGUARD-SETUP.md) during this stage.
+The installer continues and installs NetSpecter in the same run. Follow the step-by-step [AdGuard Home Setup Guide](ADGUARD-SETUP.md), setting the AdGuard web/admin port to `80` as recommended.
 
-Set the AdGuard web/admin port to `80`, matching the recommended AdGuard setup. Once AdGuard setup is complete, rerun the installer:
-
-```bash
-cd /root/netspecter
-./install.sh
-```
-
-The second run installs NetSpecter. Then open NetSpecter:
+Open NetSpecter at:
 
 ```text
 http://SERVER-IP:5050
