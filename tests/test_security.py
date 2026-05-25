@@ -208,6 +208,15 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn('return "Private / Random MAC"', collector)
         self.assertIn("ieee-data", installer)
 
+    def test_adguard_client_names_fill_device_labels_without_overwriting_custom_names(self):
+        collector = (SOURCE_DIR / "live_packet_collector.py").read_text()
+        self.assertIn('f"{base}/control/clients"', collector)
+        self.assertIn("ADGUARD_CLIENT_REFRESH_SECONDS = 300", collector)
+        self.assertIn("def parse_adguard_client_names(payload):", collector)
+        self.assertIn("remember_adguard_client_activity(client, ts)", collector)
+        self.assertIn("CREATE TABLE IF NOT EXISTS device_overrides", collector)
+        self.assertIn("WHERE ip=? AND (name IS NULL OR TRIM(name)='' OR name=ip)", collector)
+
     def test_removed_legacy_live_probe_is_not_shipped(self):
         source = (SOURCE_DIR / "app.py").read_text()
         installer = (SOURCE_DIR / "install.sh").read_text()

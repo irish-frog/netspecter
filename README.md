@@ -18,7 +18,7 @@ It combines:
 
 * Real-time device traffic visibility
 * DNS analytics from AdGuard Home
-* Device discovery and vendor classification
+* Device discovery, AdGuard client names, and vendor classification
 * Historical traffic views
 * Bridge-mode kernel traffic accounting
 * Login-protected dashboard

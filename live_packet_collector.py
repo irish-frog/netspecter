@@ -11,6 +11,7 @@ What this file does:
 - Saves measured traffic bytes for each collection interval.
 - Ignores the gateway/router so it does not appear as the top user.
 - Imports AdGuard Home DNS querylog into dns_querylog.
+- Imports AdGuard Home client names for friendly device labels.
 - Classifies domains into application categories for Top Applications.
 - Estimates bytes for selected apps from device-specific delivery DNS answers.
 
@@ -113,6 +114,9 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------
 
 imported_dns_keys = set()
+adguard_client_names = {}
+adguard_client_names_lock = threading.Lock()
+adguard_client_names_refreshed_at = 0.0
 NFT_FAMILY = "bridge"
 NFT_TABLE = "netspecter"
 NFT_CHAIN = "forward"
@@ -125,6 +129,7 @@ estimated_targets_lock = threading.Lock()
 oui_vendor_cache = None
 GEOLOCATION_URL = "https://ipwho.is/"
 GEOLOCATION_REFRESH_SECONDS = 3600
+ADGUARD_CLIENT_REFRESH_SECONDS = 300
 MONITORED_APP_DOMAIN_KEYS = {
     "YouTube": ("googlevideo.com",),
     "Netflix": ("nflxvideo.net", "netflix.com"),
@@ -231,6 +236,116 @@ def ignored_ips(config=None):
     if gateway and gateway not in ips:
         ips.insert(0, gateway)
     return set(ips)
+
+
+def ip_identifier(value):
+    """Return a normalized device IP, or an empty string for non-IP identifiers."""
+    try:
+        return str(ipaddress.ip_address(str(value or "").strip()))
+    except ValueError:
+        return ""
+
+
+def adguard_name_for_ip(ip):
+    with adguard_client_names_lock:
+        return adguard_client_names.get(str(ip or "").strip(), "")
+
+
+def parse_adguard_client_names(payload):
+    """Extract client display names from AdGuard persistent and runtime clients."""
+    if not isinstance(payload, dict):
+        return {}
+
+    names = {}
+
+    def add_name(item, identifiers):
+        if not isinstance(item, dict):
+            return
+        name = str(item.get("name") or "").strip()
+        if not name:
+            return
+        for identifier in identifiers:
+            ip = ip_identifier(identifier)
+            if ip:
+                names[ip] = name
+
+    # Auto-discovered names are useful fallback labels.
+    for item in payload.get("auto_clients", []) or []:
+        if isinstance(item, dict):
+            identifiers = [item.get("ip"), *(item.get("ids") or []), *(item.get("ip_addrs") or [])]
+            add_name(item, identifiers)
+
+    # Explicitly configured clients take precedence over runtime discovery.
+    for item in payload.get("clients", []) or []:
+        if isinstance(item, dict):
+            identifiers = [*(item.get("ip_addrs") or []), *(item.get("ids") or [])]
+            add_name(item, identifiers)
+
+    return names
+
+
+def refresh_adguard_client_names(config):
+    """Refresh friendly labels infrequently; manual UI overrides remain authoritative."""
+    global adguard_client_names, adguard_client_names_refreshed_at
+    now_monotonic = time.monotonic()
+    if now_monotonic - adguard_client_names_refreshed_at < ADGUARD_CLIENT_REFRESH_SECONDS:
+        return
+
+    base = str(config.get("adguard_url", "")).rstrip("/")
+    if not base:
+        return
+
+    try:
+        res = requests.get(
+            f"{base}/control/clients",
+            auth=(config.get("adguard_user", "admin"), config.get("adguard_pass", "")),
+            timeout=10,
+        )
+        if res.status_code != 200:
+            print(f"AdGuard client name import failed: HTTP {res.status_code}")
+            return
+        names = parse_adguard_client_names(res.json())
+    except Exception as e:
+        print(f"AdGuard client name import failed: {e}")
+        return
+
+    with adguard_client_names_lock:
+        adguard_client_names = names
+    adguard_client_names_refreshed_at = now_monotonic
+
+    for ip, name in names.items():
+        run_sql("UPDATE devices SET name=? WHERE ip=?", (name, ip))
+        # Older builds could auto-lock a discovered device while its label was still its IP.
+        run_sql(
+            """
+            UPDATE device_overrides
+            SET name=?, updated_at=?
+            WHERE ip=? AND (name IS NULL OR TRIM(name)='' OR name=ip)
+            """,
+            (name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ip),
+        )
+
+
+def remember_adguard_client_activity(client, ts):
+    """Create or label DNS-visible IP clients without overwriting manual UI overrides."""
+    ip = ip_identifier(client)
+    name = adguard_name_for_ip(ip)
+    if not ip or not name:
+        return
+    run_sql(
+        """
+        INSERT INTO devices (ip, name, status, first_seen, last_seen)
+        VALUES (?, ?, 'Active', ?, ?)
+        ON CONFLICT(ip) DO UPDATE SET
+            name=excluded.name,
+            last_seen=CASE
+                WHEN devices.last_seen IS NULL OR devices.last_seen < excluded.last_seen
+                THEN excluded.last_seen
+                ELSE devices.last_seen
+            END
+        """,
+        (ip, name, ts, ts),
+    )
 
 
 def connect_db():
@@ -505,6 +620,19 @@ def init_db():
             last_seen TEXT,
             owner TEXT,
             location TEXT
+        )
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_overrides (
+            ip TEXT PRIMARY KEY,
+            name TEXT,
+            vendor TEXT,
+            device_type TEXT,
+            status TEXT,
+            updated_at TEXT
         )
         """
     )
@@ -1050,6 +1178,7 @@ def flush_loop():
             mac = macs.get(ip, "")
             vendor = vendor_from_mac(mac)
             dtype = classify_device(vendor)
+            name = adguard_name_for_ip(ip) or ip
 
             run_sql(
                 """
@@ -1081,9 +1210,10 @@ def flush_loop():
                         THEN excluded.device_type
                         ELSE devices.device_type
                     END,
+                    name=CASE WHEN excluded.name != excluded.ip THEN excluded.name ELSE devices.name END,
                     last_seen=excluded.last_seen
                 """,
-                (ip, ip, mac, vendor, dtype, now, now),
+                (ip, name, mac, vendor, dtype, now, now),
             )
 
             interval_rx_mb = rx_delta / 1024 / 1024
@@ -1099,7 +1229,7 @@ def flush_loop():
                     """,
                     (
                         ip,
-                        ip,
+                        name,
                         mac,
                         interval_rx_mb,
                         interval_tx_mb,
@@ -1212,6 +1342,7 @@ def import_adguard_querylog():
         if not domain or not client:
             continue
 
+        remember_adguard_client_activity(client, ts)
         remember_estimated_app_targets(c, client, domain, item.get("answer") or [], ts, blocked)
 
         if cutoff and ts <= cutoff:
@@ -1250,6 +1381,7 @@ def adguard_querylog_loop():
         interval = positive_int(c.get("adguard_querylog_interval_seconds", 15), 15, 5)
 
         try:
+            refresh_adguard_client_names(c)
             import_adguard_querylog()
             update_one_remote_location()
         except Exception as e:
