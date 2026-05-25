@@ -8,7 +8,7 @@
   Real-time Network Visibility and DNS Analytics Platform
 </p>
 
----
+\---
 
 ## Overview
 
@@ -16,15 +16,15 @@ NetSpecter is a lightweight network visibility appliance for homelabs, small off
 
 It combines:
 
-- Real-time device traffic visibility
-- DNS analytics from AdGuard Home
-- Device discovery and vendor classification
-- Historical traffic views
-- Bridge-mode kernel traffic accounting
-- Login-protected dashboard
-- CSV exports and service health checks
+* Real-time device traffic visibility
+* DNS analytics from AdGuard Home
+* Device discovery and vendor classification
+* Historical traffic views
+* Bridge-mode kernel traffic accounting
+* Login-protected dashboard
+* CSV exports and service health checks
 
----
+\---
 
 ## Recommended Layout
 
@@ -42,7 +42,7 @@ Client Devices
 
 Bridge mode is recommended for best traffic visibility. DNS analytics require clients to use AdGuard Home as DNS.
 
----
+\---
 
 ## Before Installation: Network Interfaces And Bridge
 
@@ -90,7 +90,7 @@ enp5s0    switch-facing port
 then use those exact names in the bridge configuration:
 
 ```ini
-    bridge_ports enp4s0 enp5s0
+    bridge\_ports enp4s0 enp5s0
 
 iface enp4s0 inet manual
 iface enp5s0 inet manual
@@ -119,10 +119,10 @@ iface br0 inet static
     address 192.168.1.10/24
     gateway 192.168.1.1
     dns-nameservers 192.168.1.1
-    bridge_ports enp1s0 enp2s0
-    bridge_stp off
-    bridge_fd 0
-    bridge_maxwait 0
+    bridge\_ports enp1s0 enp2s0
+    bridge\_stp off
+    bridge\_fd 0
+    bridge\_maxwait 0
 
 iface enp1s0 inet manual
 iface enp2s0 inet manual
@@ -130,10 +130,10 @@ iface enp2s0 inet manual
 
 Replace the IPs and physical interface names for your network:
 
-- Replace `enp1s0` with your router-facing NIC name.
-- Replace `enp2s0` with your switch-facing NIC name.
-- Replace those names in both `bridge_ports` and the `iface ... inet manual` lines.
-- Leave the appliance IP address on `br0` only; do not give either physical bridge port its own IP address.
+* Replace `enp1s0` with your router-facing NIC name.
+* Replace `enp2s0` with your switch-facing NIC name.
+* Replace those names in both `bridge\_ports` and the `iface ... inet manual` lines.
+* Leave the appliance IP address on `br0` only; do not give either physical bridge port its own IP address.
 
 ### Keep Bridge Ports Active On Reboot
 
@@ -141,7 +141,7 @@ The bridge configuration above is sufficient for the two NICs inside the bridge:
 
 ```ini
 auto br0
-    bridge_ports enp1s0 enp2s0
+    bridge\_ports enp1s0 enp2s0
 ```
 
 When Debian brings up `br0` during boot, it also brings `enp1s0` and `enp2s0` into the bridge. On a working NetSpecter system, verification should show:
@@ -182,28 +182,28 @@ ping -c 3 1.1.1.1
 
 Expected results:
 
-- `br0` has the NetSpecter appliance IP address.
-- Both physical ports appear as bridge members.
-- Both physical bridge ports show `state forwarding` after reboot.
-- The default route points to your gateway through `br0`.
-- LAN devices continue to access the router through the appliance.
+* `br0` has the NetSpecter appliance IP address.
+* Both physical ports appear as bridge members.
+* Both physical bridge ports show `state forwarding` after reboot.
+* The default route points to your gateway through `br0`.
+* LAN devices continue to access the router through the appliance.
 
----
+\---
 
 ## Supported OS
 
 Recommended:
 
-- Debian 12 Bookworm
+* Debian 12 Bookworm
 
 Run the installer as `root`.
 
----
+\---
 
 ## Quick Install
 
 ```bash
-apt update && apt install git -y
+apt update \&\& apt install git -y
 
 cd /root
 git clone https://github.com/irish-frog/netspecter.git
@@ -215,14 +215,14 @@ chmod +x install.sh
 
 The installer:
 
-- Updates Debian and installs initial setup tools
-- Installs AdGuard Home and continues while its browser setup remains available
-- Installs NetSpecter to `/opt/netspecter`
-- Creates config in `/etc/netspecter`
-- Stores runtime data in `/var/lib/netspecter`
-- Installs systemd services and watchdog timer
+* Updates Debian and installs initial setup tools
+* Installs AdGuard Home and continues while its browser setup remains available
+* Installs NetSpecter to `/opt/netspecter`
+* Creates config in `/etc/netspecter`
+* Stores runtime data in `/var/lib/netspecter`
+* Installs systemd services and watchdog timer
 
----
+\---
 
 ## First Run
 
@@ -250,12 +250,12 @@ After creating the admin login, NetSpecter checks whether deployment settings ar
 
 Configure:
 
-- Gateway IP
-- LAN prefix
-- Live traffic interface, usually `br0`
-- AdGuard URL/user/password
-- Traffic retention days, use `30` to keep the full 30-day traffic view
-- DNS/App retention days for AdGuard-derived application history
+* Gateway IP
+* LAN prefix
+* Live traffic interface, usually `br0`
+* AdGuard URL/user/password
+* Traffic retention days, use `30` to keep the full 30-day traffic view
+* DNS/App retention days for AdGuard-derived application history
 
 Service passwords are encrypted in `/etc/netspecter/config.json` after saving Settings.
 
@@ -282,122 +282,9 @@ nslookup google.com YOUR-NETSPECTER-IP
 
 Requests should then appear in the AdGuard Query Log and in NetSpecter DNS/application views.
 
----
-
-## What The Numbers Mean
-
-Traffic totals are measured by Linux `nftables` byte counters on bridge-forwarded IPv4 traffic. NetSpecter creates its own `bridge netspecter` table and reads counter changes for each LAN IP; it does not inspect every packet in Python. This is accurate at full download speed and adds no blocking rules.
-
-The configured LAN Prefix identifies the counted network, for example `192.168.1.` counts `192.168.1.0/24`. Gateway IP and Extra Ignored IPs are excluded. LAN-to-LAN and broadcast traffic are not counted as internet usage.
-
-`Download`, `Upload`, `Total Traffic`, Traffic History and the dashboard graph all use differences read from those kernel counters. A collector restart rebuilds its private counters at zero and then records only fresh traffic; it must not manufacture a large baseline total.
-
-`Top Applications` and application detail pages are different: they are based on AdGuard DNS queries. They show which devices looked up domains classified for an application and how often. DNS cannot prove how many bytes were used by YouTube, Netflix or another application, so NetSpecter does not present application rows as data usage.
-
-### Replacing Older Traffic History
-
-Versions that stored cumulative collector snapshots can contain inflated history if multiple collectors ran or a collector restarted. The installer stops orphaned collector processes during an update. After updating, verify the running collector:
-
-```bash
-pgrep -af live_packet_collector.py
-```
-
-`pgrep` should show exactly one running collector under `/opt/netspecter`. If it does not, run:
-
-```bash
-systemctl stop netspecter-collector
-pkill -f live_packet_collector.py || true
-systemctl start netspecter-collector
-pgrep -af live_packet_collector.py
-```
-
-In NetSpecter, open **Traffic**, choose **Clear Traffic History**, confirm the reset, and allow fresh kernel-counted data to collect.
-
-For a simple sanity test, download a known-size file from one LAN client after clearing traffic. That client's download total should rise by roughly the file size plus normal network overhead, not jump by gigabytes without corresponding traffic.
-
-Check the live kernel counters if troubleshooting:
-
-```bash
-nft list chain bridge netspecter forward
-```
-
-Rules in this table are counters only with an `accept` policy; they do not alter forwarding or DNS filtering.
-
----
-
-## Services
-
-```bash
-systemctl status netspecter-web
-systemctl status netspecter-collector
-systemctl status netspecter-watchdog.timer
-```
-
-Restart:
-
-```bash
-systemctl restart netspecter-web
-systemctl restart netspecter-collector
-```
-
-Logs:
-
-```bash
-journalctl -u netspecter-web -f
-journalctl -u netspecter-collector -f
-```
-
-Watchdog timer:
-
-```bash
-systemctl list-timers | grep netspecter
-```
-
----
-
-## Updating
-
-To update NetSpecter after it has already been installed:
-
-```bash
-cd /root/netspecter
-git pull
-./install.sh
-```
-
-Rerunning the installer updates application files and services while preserving your live configuration:
-
-```text
-/etc/netspecter/config.json
-/opt/AdGuardHome/AdGuardHome.yaml
-```
-
-Traffic collected by older cumulative-snapshot versions is intentionally not used by current totals. See **Replacing Older Traffic History** above when upgrading an existing appliance.
-
----
-
-## Removing ntopng From An Older Install
-
-NetSpecter now uses Linux `nftables` counters for traffic totals and does not require `ntopng` or its package repository. On a system that installed an earlier NetSpecter build, remove ntopng as `root`:
-
-```bash
-systemctl disable --now ntopng 2>/dev/null || true
-apt purge -y ntopng ntopng-data apt-ntop apt-ntop-stable || true
-rm -f /etc/apt/sources.list.d/ntop.list /usr/share/keyrings/ntop-archive-keyring.gpg /tmp/ntop.key
-apt update
-apt autoremove --purge -y
-```
-
-`redis-server` was previously installed for ntopng. NetSpecter does not use Redis; remove it too only when no other service on your appliance depends on it:
-
-```bash
-systemctl disable --now redis-server 2>/dev/null || true
-apt purge -y redis-server redis-tools
-apt autoremove --purge -y
-```
-
----
+\---
 
 ## Project Status
 
 Alpha / active development.
+
