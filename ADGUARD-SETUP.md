@@ -34,7 +34,6 @@ NetSpecter / AdGuard IP: 192.168.1.10
 Gateway / router IP:     192.168.1.1
 LAN network:             192.168.1.0/24
 AdGuard web page:        http://192.168.1.10
-ntopng web page:         http://192.168.1.10:3000
 NetSpecter web page:     http://192.168.1.10:5050
 ```
 
@@ -61,7 +60,7 @@ On the first configuration page, set:
 | DNS Server Interface | All interfaces / `0.0.0.0` |
 | DNS Server Port | `53` |
 
-Port `80` is important because it releases port `3000` for ntopng.
+Port `80` is recommended so AdGuard has a simple, predictable management address on the appliance.
 
 Create your AdGuard administrator username and password when prompted. Keep that password private; you will enter it in NetSpecter Settings later.
 
@@ -244,6 +243,6 @@ If no requests appear, confirm the client or router is actually using your NetSp
 
 AdGuard setup is complete when its **Query Log** shows requests from LAN devices.
 
-Return to the main installation guide and continue with the second installer run, which installs ntopng and NetSpecter:
+Return to the main installation guide and continue with the second installer run, which installs NetSpecter:
 
 [Return to the NetSpecter README](README.md#first-run)

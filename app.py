@@ -66,11 +66,6 @@ DEFAULT_CONFIG = {
     "adguard_url": "http://127.0.0.1",
     "adguard_user": "admin",
     "adguard_pass": "",
-    "ntop_url": "http://127.0.0.1:3000",
-    "ntop_user": "admin",
-    "ntop_pass": "",
-    "ntop_ifid": "3",
-    "iftop_iface": "br0",
     "packet_iface": "br0",
     "gateway_ip": "",
     "ignore_ips": [],
@@ -82,17 +77,24 @@ DEFAULT_CONFIG = {
     "admin_password_hash": "",
     "lan_prefix": "192.168.1.",
     "collect_interval_seconds": 30,
-    "traffic_retention_days": 7,
+    "traffic_retention_days": 30,
     "dns_retention_days": 14,
-    "querylog_retention_days": 3,
-    "alerts_retention_days": 14,
-    "high_bandwidth_mbps": 50,
-    "daily_usage_warning_mb": 10000,
-    "web_refresh_seconds": 30,
     "public_ip_cache_seconds": 1800,
 }
 
 SENSITIVE_CONFIG_KEYS = {"adguard_pass", "ntop_pass"}
+HIDDEN_UNUSED_SETTINGS = {
+    "alerts_retention_days",
+    "daily_usage_warning_mb",
+    "high_bandwidth_mbps",
+    "iftop_iface",
+    "ntop_ifid",
+    "ntop_pass",
+    "ntop_user",
+    "ntop_url",
+    "querylog_retention_days",
+    "web_refresh_seconds",
+}
 ENCRYPTED_PREFIX = "enc:"
 
 NOISE_DOMAINS = [
@@ -337,12 +339,6 @@ def setup_missing_items(config=None):
     if str(c.get("adguard_url", "")).strip() == DEFAULT_CONFIG["adguard_url"]:
         missing.append("Confirm AdGuard URL")
 
-    if not str(c.get("ntop_url", "") or "").strip():
-        missing.append("ntopng URL")
-
-    if str(c.get("ntop_url", "")).strip() == DEFAULT_CONFIG["ntop_url"]:
-        missing.append("Confirm ntopng URL")
-
     return missing
 
 
@@ -571,6 +567,22 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_day_ip ON traffic_samples(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_ip_ts ON traffic_samples(ip, ts)")
     con.execute("""
+        CREATE TABLE IF NOT EXISTS traffic_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            name TEXT,
+            mac TEXT,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            live_bps REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
+    con.execute("""
         CREATE TABLE IF NOT EXISTS dns_querylog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             day TEXT,
@@ -583,6 +595,12 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS dns_import_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cleared_at TEXT
+        )
+    """)
     con.execute("""
         CREATE TABLE IF NOT EXISTS live_device_speed (
             ip TEXT PRIMARY KEY,
@@ -761,175 +779,14 @@ def fmt_bytes_per_sec(value):
     return "0 B/s" if bps == 0 else f"{bps:.0f} B/s"
 
 
-def fmt_ntop_bits_as_bytes(value):
-    """ntopng throughput is normally bits/sec. Display it as bytes/sec."""
+def fmt_bits_as_bytes(value):
+    """Display collector throughput, stored as bits/sec, in byte-rate units."""
     try:
         bits = float(value or 0)
     except Exception:
         bits = 0.0
 
     return fmt_bytes_per_sec(bits / 8)
-
-
-def _flatten_dict(data, prefix=""):
-    out = {}
-    if not isinstance(data, dict):
-        return out
-
-    for key, value in data.items():
-        name = f"{prefix}.{key}" if prefix else str(key)
-        if isinstance(value, dict):
-            out.update(_flatten_dict(value, name))
-        else:
-            out[name] = value
-
-    return out
-
-
-def _to_float(value):
-    try:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            value = value.replace(",", "").strip()
-            if not value:
-                return None
-        return float(value)
-    except Exception:
-        return None
-
-
-def _find_host_rows(data):
-    """Find the host list in the different ntopng JSON shapes."""
-    if isinstance(data, list):
-        return [x for x in data if isinstance(x, dict)]
-
-    if not isinstance(data, dict):
-        return []
-
-    for key in ["rsp", "data", "hosts", "rows", "records"]:
-        val = data.get(key)
-        if isinstance(val, list):
-            return [x for x in val if isinstance(x, dict)]
-        if isinstance(val, dict):
-            nested = _find_host_rows(val)
-            if nested:
-                return nested
-
-    for val in data.values():
-        nested = _find_host_rows(val)
-        if nested:
-            return nested
-
-    return []
-
-
-def _row_ip(row):
-    flat = _flatten_dict(row)
-    for key in ["ip", "host", "address", "ip_addr", "ipAddress", "host.ip", "key"]:
-        value = flat.get(key)
-        if value:
-            text = str(value)
-            if "@" in text:
-                text = text.split("@")[-1]
-            try:
-                ipaddress.ip_address(text)
-                return text
-            except Exception:
-                pass
-
-    for value in flat.values():
-        text = str(value)
-        try:
-            ipaddress.ip_address(text)
-            return text
-        except Exception:
-            continue
-
-    return None
-
-
-def _extract_ntop_speeds(row):
-    """Return bits/sec from a flexible ntopng host row."""
-    flat = _flatten_dict(row)
-    rx = tx = total = None
-
-    rx_words = ["recv", "rcvd", "rx", "download", "in"]
-    tx_words = ["sent", "tx", "upload", "out"]
-    rate_words = ["throughput", "thpt", "bps", "bitrate", "rate"]
-
-    for key, value in flat.items():
-        k = str(key).lower()
-        num = _to_float(value)
-        if num is None:
-            continue
-
-        is_rate = any(w in k for w in rate_words)
-        if not is_rate:
-            continue
-
-        if rx is None and any(w in k for w in rx_words):
-            rx = num
-        elif tx is None and any(w in k for w in tx_words):
-            tx = num
-        elif total is None and not any(w in k for w in rx_words + tx_words):
-            total = num
-
-    if total is None:
-        total = (rx or 0) + (tx or 0)
-
-    return {
-        "rx_bps": float(rx or 0),
-        "tx_bps": float(tx or 0),
-        "total_bps": float(total or 0),
-    }
-
-
-def ntop_active_hosts(max_age=5):
-    """Pull live host throughput from ntopng. Safe fallback returns {}."""
-    cached = cache_get("ntop_active_hosts", max_age)
-    if isinstance(cached, dict):
-        return cached
-
-    c = cfg()
-    base = str(c.get("ntop_url", "")).rstrip("/")
-    ifid = str(c.get("ntop_ifid", "3"))
-    auth = (c.get("ntop_user"), c.get("ntop_pass"))
-
-    urls = [
-        f"{base}/lua/rest/v2/get/host/active.lua",
-        f"{base}/lua/rest/v2/get/host/active.json",
-    ]
-
-    for url in urls:
-        try:
-            res = requests.get(url, auth=auth, params={"ifid": ifid}, timeout=5)
-            if res.status_code != 200:
-                continue
-
-            data = res.json()
-            rows = _find_host_rows(data)
-            hosts = {}
-
-            for row in rows:
-                ip = _row_ip(row)
-                if not ip:
-                    continue
-                hosts[ip] = _extract_ntop_speeds(row)
-
-            cache_set("ntop_active_hosts", hosts)
-            return hosts
-
-        except Exception as e:
-            print(f"ntop active hosts lookup failed: {e}")
-
-    return {}
-
-
-def ntop_host_speed(ip):
-    hosts = ntop_active_hosts()
-    return hosts.get(str(ip), {"rx_bps": 0.0, "tx_bps": 0.0, "total_bps": 0.0})
-
 
 
 def _iftop_rate_to_bits(value, unit):
@@ -1078,6 +935,15 @@ def iftop_live_hosts(max_age=4):
     return hosts
 
 
+def live_sample_max_age():
+    """Keep a collector sample live until the next configured write can arrive."""
+    try:
+        interval = max(1, int(cfg().get("collect_interval_seconds", 30) or 30))
+    except Exception:
+        interval = 30
+    return max(20, interval * 2 + 5)
+
+
 def live_packet_speed(ip):
     """Read live per-device speed from the lightweight packet collector.
 
@@ -1107,10 +973,10 @@ def live_packet_speed(ip):
     if not row:
         return {}
 
-    # Ignore stale packet samples older than 20 seconds.
+    # Ignore samples only after enough time for the configured next flush.
     try:
         updated = datetime.strptime(str(row["updated_at"])[:19], "%Y-%m-%d %H:%M:%S")
-        if (datetime.now() - updated).total_seconds() > 20:
+        if (datetime.now() - updated).total_seconds() > live_sample_max_age():
             return {}
     except Exception:
         pass
@@ -1129,7 +995,7 @@ def live_host_speed(ip_or_name):
     Source table: live_device_speed
     Stored values are bytes/sec; live_packet_speed converts to bits/sec
     so the existing formatter can display KB/s, MB/s and GB/s correctly.
-    No ntopng/iftop fallback is used for speed values.
+    No external traffic-analyser fallback is used for speed values.
     """
     key = str(ip_or_name or "").strip()
     packet = live_packet_speed(key)
@@ -1142,6 +1008,7 @@ def live_host_speed(ip_or_name):
 def live_network_speed():
     """Sum current live throughput from the packet collector table only."""
     try:
+        freshness = f"-{live_sample_max_age()} seconds"
         rows = query(
             """
             SELECT
@@ -1149,8 +1016,9 @@ def live_network_speed():
                 SUM(tx_bps) AS tx,
                 SUM(total_bps) AS total
             FROM live_device_speed
-            WHERE updated_at >= datetime('now', 'localtime', '-20 seconds')
-            """
+            WHERE updated_at >= datetime('now', 'localtime', ?)
+            """,
+            (freshness,),
         )
     except Exception:
         rows = []
@@ -1159,7 +1027,7 @@ def live_network_speed():
         return {"rx_bps": 0.0, "tx_bps": 0.0, "total_bps": 0.0, "source": "collector"}
 
     r = rows[0]
-    # table stores bytes/sec; convert to bits/sec for fmt_ntop_bits_as_bytes
+    # Table stores bytes/sec; convert to bits/sec for the display formatter.
     return {
         "rx_bps": float(r["rx"] or 0) * 8,
         "tx_bps": float(r["tx"] or 0) * 8,
@@ -1168,19 +1036,23 @@ def live_network_speed():
     }
 
 
-def restart_collector_service():
+def collector_service_action(action):
     try:
-        subprocess.run(
-            ["systemctl", "restart", "netspecter-collector"],
+        result = subprocess.run(
+            ["systemctl", action, "netspecter-collector"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=15,
             check=False,
         )
-        return True
+        return result.returncode == 0
     except Exception as e:
-        print(f"Collector restart failed: {e}")
+        print(f"Collector {action} failed: {e}")
         return False
+
+
+def restart_collector_service():
+    return collector_service_action("restart")
 
 def latest_hosts(limit=100):
     ensure_device_overrides_table()
@@ -1195,6 +1067,17 @@ def latest_hosts(limit=100):
 
     return query(
         f"""
+        WITH usage AS (
+            SELECT
+                ip,
+                MAX(id) AS max_id,
+                SUM(downloaded_mb) AS downloaded_mb,
+                SUM(uploaded_mb) AS uploaded_mb,
+                SUM(total_mb) AS total_mb
+            FROM traffic_intervals
+            WHERE day = ?
+            GROUP BY ip
+        )
         SELECT
             COALESCE(o.name, d.name, t.name, t.ip) AS name,
             COALESCE(o.vendor, d.vendor, 'Unknown Vendor') AS vendor,
@@ -1205,23 +1088,24 @@ def latest_hosts(limit=100):
             d.owner,
             d.location,
             CASE WHEN o.ip IS NOT NULL THEN 1 ELSE 0 END AS manual_locked,
-            t.*
-        FROM traffic_samples t
+            t.id,
+            t.ip,
+            t.mac,
+            u.downloaded_mb,
+            u.uploaded_mb,
+            u.total_mb,
+            t.live_bps,
+            t.day,
+            t.ts
+        FROM usage u
+        JOIN traffic_intervals t
+            ON t.id = u.max_id
         LEFT JOIN devices d
             ON d.ip = t.ip
         LEFT JOIN device_overrides o
             ON o.ip = t.ip
-        JOIN (
-            SELECT
-                ip,
-                MAX(id) AS max_id
-            FROM traffic_samples
-            WHERE day = ?
-            GROUP BY ip
-        ) x
-            ON t.id = x.max_id
         WHERE 1=1 {ignore_clause}
-        ORDER BY t.total_mb DESC
+        ORDER BY total_mb DESC
         LIMIT ?
         """,
         tuple(params),
@@ -1269,18 +1153,29 @@ def totals():
         params.extend(ignore)
     rows = query(
         f"""
+        WITH usage AS (
+            SELECT
+                ip,
+                MAX(name) AS name,
+                MAX(mac) AS mac,
+                SUM(downloaded_mb) AS downloaded_mb,
+                SUM(uploaded_mb) AS uploaded_mb,
+                SUM(total_mb) AS total_mb
+            FROM traffic_intervals
+            WHERE day >= ?
+            GROUP BY ip
+        )
         SELECT
-            COALESCE(o.name, d.name, t.name, t.ip) AS name,
-            t.ip,
-            MAX(t.mac) AS mac,
-            SUM(t.downloaded_mb) AS downloaded_mb,
-            SUM(t.uploaded_mb) AS uploaded_mb,
-            SUM(t.total_mb) AS total_mb
-        FROM traffic_samples t
-        LEFT JOIN devices d ON d.ip=t.ip
-        LEFT JOIN device_overrides o ON o.ip=t.ip
-        WHERE t.day >= ? {ignore_clause}
-        GROUP BY t.ip
+            COALESCE(o.name, d.name, u.name, u.ip) AS name,
+            u.ip,
+            u.mac,
+            u.downloaded_mb,
+            u.uploaded_mb,
+            u.total_mb
+        FROM usage u
+        LEFT JOIN devices d ON d.ip=u.ip
+        LEFT JOIN device_overrides o ON o.ip=u.ip
+        WHERE 1=1 {ignore_clause.replace("t.ip", "u.ip")}
         ORDER BY total_mb DESC
         LIMIT 500
         """,
@@ -1745,7 +1640,6 @@ refreshLiveSpeeds();
 
 def topbar(title="Dashboard"):
     c = cfg()
-    ntop_url = str(c.get("ntop_url", "") or "#")
     adguard_url = str(c.get("adguard_url", "") or "#")
 
     return f"""
@@ -1755,10 +1649,9 @@ def topbar(title="Dashboard"):
     <div class="sub">Network visibility + privacy protection</div>
   </div>
   <div class="badges">
-    <span>Internet Online</span>
+    <span>Observed IPv4 traffic</span>
     <span>Public IP: {public_ip()}</span>
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
-    <a href="{h(ntop_url)}" target="_blank"><span>ntopng</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
     <span>LAN: {c.get('lan_prefix')}0/24</span>
   </div>
@@ -1774,12 +1667,14 @@ def api_live():
     Source: live_device_speed written by live_packet_collector.py.
     Values in DB are bytes/sec. UI receives already formatted strings.
     """
+    freshness = f"-{live_sample_max_age()} seconds"
     rows = query(
         """
         SELECT ip, rx_bps, tx_bps, total_bps, updated_at
         FROM live_device_speed
-        WHERE updated_at >= datetime('now', 'localtime', '-30 seconds')
-        """
+        WHERE updated_at >= datetime('now', 'localtime', ?)
+        """,
+        (freshness,),
     )
 
     data = {}
@@ -1813,6 +1708,38 @@ def api_live():
 
     return data
 
+
+@app.route("/api/dashboard-summary")
+def api_dashboard_summary():
+    """Refresh accumulated dashboard counters from measured history."""
+    down, up, total, active, blocked, _top = totals()
+    start_day = range_start_day()
+    dns_rows = query(
+        "SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=?",
+        (start_day,),
+    )
+    blocked_rows = query(
+        "SELECT COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=? AND blocked=1",
+        (start_day,),
+    )
+    dns_total = int(dns_rows[0]["total"] or 0) if dns_rows else 0
+    unique_domains = int(dns_rows[0]["domains"] or 0) if dns_rows else 0
+    blocked_domains = int(blocked_rows[0]["domains"] or 0) if blocked_rows else 0
+    blocked_pct = round((blocked / dns_total * 100), 1) if dns_total else 0
+
+    return {
+        "traffic_total": fmt_mb(total),
+        "traffic_down": fmt_mb(down),
+        "traffic_up": fmt_mb(up),
+        "active_devices": active,
+        "blocked": blocked,
+        "blocked_domains": blocked_domains,
+        "blocked_pct": blocked_pct,
+        "dns_total": dns_total,
+        "unique_domains": unique_domains,
+    }
+
+
 @app.route("/")
 def dashboard():
     c = cfg()
@@ -1832,6 +1759,14 @@ def dashboard():
     dns_today = query("SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=?", (start_day,))
     dns_total = int(dns_today[0]["total"] or 0) if dns_today else 0
     unique_domains = int(dns_today[0]["domains"] or 0) if dns_today else 0
+    blocked_pct = round((blocked / dns_total * 100), 1) if dns_total else 0
+    traffic_range_label = {"1d": "Today", "7d": "Last 7 Days", "30d": "Last 30 Days"}.get(range_key(), "Today")
+    dashboard_period = {"1d": "24h", "7d": "7d", "30d": "30d"}.get(range_key(), "24h")
+    adguard_ok, adguard_status = ag_get("/status")
+    protection_enabled = adguard_status.get("protection_enabled") if adguard_ok and isinstance(adguard_status, dict) else None
+    protection_text = "ON" if protection_enabled is True else "OFF" if protection_enabled is False else "UNKNOWN"
+    protection_class = "green" if protection_enabled is True else "red" if protection_enabled is False else "yellow"
+    protection_detail = "AdGuard filtering" if protection_enabled is not None else "AdGuard unavailable"
 
     blocked_today = query(
         """
@@ -1916,7 +1851,6 @@ def dashboard():
   width:96px;
   height:96px;
   border-radius:50%;
-  background:conic-gradient(#00ddc7 0 72%, #f8c84e 72% 82%, #ff526c 82% 90%, #263247 90% 100%);
   position:relative;
 }}
 .dash-ring::after {{
@@ -1948,24 +1882,8 @@ def dashboard():
 .dash-app-bar {{ height:8px; background:#2a374b; border-radius:999px; overflow:hidden; }}
 .dash-app-bar span {{ display:block; height:100%; background:linear-gradient(90deg, #00ddc7, #5ba8ff); border-radius:999px; }}
 .dash-app-row em {{ color:#b7c7d8; font-style:normal; }}
-.fake-chart {{ height:168px; position:relative; border-bottom:1px solid rgba(255,255,255,.08); background:linear-gradient(to top, rgba(91,168,255,.08), transparent); border-radius:10px; overflow:hidden; }}
-.fake-chart svg {{ width:100%; height:100%; }}
-.chart-scale {{ position:absolute; inset:8px 0 24px 0; pointer-events:none; }}
-.chart-scale span {{
-  position:absolute;
-  left:8px;
-  right:0;
-  border-top:1px solid rgba(148,163,184,.16);
-  color:#8fa3b8;
-  font-size:11px;
-  padding-left:2px;
-}}
-.chart-scale span:nth-child(1) {{ top:0; }}
-.chart-scale span:nth-child(2) {{ top:25%; }}
-.chart-scale span:nth-child(3) {{ top:50%; }}
-.chart-scale span:nth-child(4) {{ top:75%; }}
-.chart-scale span:nth-child(5) {{ top:100%; }}
-.chart-scale span b {{ display:inline-block; min-width:34px; background:#142136; transform:translateY(-8px); }}
+.dash-chart {{ height:168px; }}
+.dash-chart canvas {{ max-height:168px; }}
 .legend {{ display:flex; align-items:center; gap:18px; color:#cbd6e3; margin-bottom:8px; flex-wrap:wrap; }}
 .legend .legend-live {{ margin-left:auto; font-size:16px; }}
 .chart-legend {{ display:flex; align-items:center; gap:14px; margin-top:8px; color:#b8c7da; font-size:13px; font-weight:800; }}
@@ -1981,12 +1899,12 @@ def dashboard():
 <div class="dash-wrap">
   {time_picker()}
   <div class="dash-summary">
-    <div class="dash-ring"></div>
-    <a class="dash-card" href="/blocked"><div class="label">Total Blocked</div><span class="big red">{blocked:,}</span><small>Blocked domains: {blocked_domains:,}</small></a>
-    <a class="dash-card" href="/adguard"><div class="label">Protection</div><span class="big green">ON</span><small>AdGuard filtering</small></a>
-    <a class="dash-card" href="/devices"><div class="label">Total Devices</div><span class="big blue">{active}</span><small>Manual names apply instantly</small></a>
-    <a class="dash-card" href="/traffic"><div class="label">Total Traffic Today</div><span class="big teal">{fmt_mb(total)}</span><small>Down {fmt_mb(down)} | Up {fmt_mb(up)}</small></a>
-    <a class="dash-card dash-total-card" href="/applications"><div class="label">Total Queries</div><span class="big">{dns_total:,}</span><small>{unique_domains:,} domains</small></a>
+    <div id="dashboardBlockRing" class="dash-ring" title="DNS blocked share: {blocked_pct}%" style="background:conic-gradient(#ff526c 0 {blocked_pct}%, #00ddc7 {blocked_pct}% 100%);"></div>
+    <a class="dash-card" href="/blocked"><div class="label">Total Blocked</div><span id="dashboardBlocked" class="big red">{blocked:,}</span><small>Blocked domains: <span id="dashboardBlockedDomains">{blocked_domains:,}</span></small></a>
+    <a class="dash-card" href="/adguard"><div class="label">Protection</div><span class="big {protection_class}">{protection_text}</span><small>{protection_detail}</small></a>
+    <a class="dash-card" href="/devices"><div class="label">Traffic Devices</div><span id="dashboardTrafficDevices" class="big blue">{active}</span><small>Seen in selected range</small></a>
+    <a class="dash-card" href="/traffic"><div class="label">Traffic {traffic_range_label}</div><span id="dashboardTrafficTotal" class="big teal">{fmt_mb(total)}</span><small>Down <span id="dashboardTrafficDown">{fmt_mb(down)}</span> | Up <span id="dashboardTrafficUp">{fmt_mb(up)}</span></small></a>
+    <a class="dash-card dash-total-card" href="/applications"><div class="label">Total Queries</div><span id="dashboardDnsTotal" class="big">{dns_total:,}</span><small><span id="dashboardUniqueDomains">{unique_domains:,}</span> domains</small></a>
   </div>
 
   <div class="dash-two">
@@ -1995,21 +1913,9 @@ def dashboard():
       <div class="legend">
         <span><i class="fa-solid fa-circle blue"></i> Download / Downstream</span>
         <span><i class="fa-solid fa-circle purple"></i> Upload / Upstream</span>
-        <b class="blue legend-live">Live collector: DL <span data-live-network="1" data-live-field="down">{fmt_ntop_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_ntop_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_ntop_bits_as_bytes(live_total_bps)}</span></b>
+        <b class="blue legend-live">Live collector: DL <span data-live-network="1" data-live-field="down">{fmt_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_bits_as_bytes(live_total_bps)}</span></b>
       </div>
-      <div class="fake-chart">
-        <div class="chart-scale">
-          <span><b>4K</b></span>
-          <span><b>3K</b></span>
-          <span><b>2K</b></span>
-          <span><b>1K</b></span>
-          <span><b>0</b></span>
-        </div>
-        <svg viewBox="0 0 600 200" preserveAspectRatio="none">
-          <polyline points="0,170 40,145 80,130 120,112 160,120 200,70 240,118 280,90 320,130 360,75 400,110 440,95 480,125 520,80 560,120 600,105" fill="none" stroke="#00aaff" stroke-width="3" />
-          <polyline points="0,185 40,160 80,150 120,135 160,145 200,105 240,132 280,122 320,145 360,105 400,130 440,122 480,140 520,112 560,132 600,125" fill="none" stroke="#a366ff" stroke-width="3" />
-        </svg>
-      </div>
+      <div class="dash-chart"><canvas id="dashboardTrafficChart"></canvas></div>
       <div class="chart-legend">
         <span><b class="download"></b> Download</span>
         <span><b class="upload"></b> Upload</span>
@@ -2027,6 +1933,65 @@ def dashboard():
   </div>
 
 </div>
+<script>
+let dashboardTrafficChart = null;
+async function loadDashboardSummary() {{
+  try {{
+    const response = await fetch("/api/dashboard-summary?range={range_key()}", {{cache: "no-store"}});
+    if (!response.ok) return;
+    const data = await response.json();
+    const setText = (id, value) => {{
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    }};
+    setText("dashboardTrafficTotal", data.traffic_total);
+    setText("dashboardTrafficDown", data.traffic_down);
+    setText("dashboardTrafficUp", data.traffic_up);
+    setText("dashboardTrafficDevices", Number(data.active_devices).toLocaleString());
+    setText("dashboardBlocked", Number(data.blocked).toLocaleString());
+    setText("dashboardBlockedDomains", Number(data.blocked_domains).toLocaleString());
+    setText("dashboardDnsTotal", Number(data.dns_total).toLocaleString());
+    setText("dashboardUniqueDomains", Number(data.unique_domains).toLocaleString());
+    const ring = document.getElementById("dashboardBlockRing");
+    if (ring) {{
+      ring.title = "DNS blocked share: " + data.blocked_pct + "%";
+      ring.style.background = "conic-gradient(#ff526c 0 " + data.blocked_pct + "%, #00ddc7 " + data.blocked_pct + "% 100%)";
+    }}
+  }} catch (error) {{
+    console.log("Dashboard summary refresh failed:", error);
+  }}
+}}
+async function loadDashboardTraffic() {{
+  const response = await fetch("/api/history?period={dashboard_period}", {{cache: "no-store"}});
+  const data = await response.json();
+  const context = document.getElementById("dashboardTrafficChart").getContext("2d");
+  if (dashboardTrafficChart) dashboardTrafficChart.destroy();
+  dashboardTrafficChart = new Chart(context, {{
+    type: "line",
+    data: {{
+      labels: data.labels,
+      datasets: [
+        {{ label: "Download", data: data.downloaded, borderColor: "#18aaff", backgroundColor: "rgba(24,170,255,.08)", borderWidth: 2.5, tension: .25, pointRadius: 0, fill: true }},
+        {{ label: "Upload", data: data.uploaded, borderColor: "#9c6cff", backgroundColor: "rgba(156,108,255,.04)", borderWidth: 2.5, tension: .25, pointRadius: 0, fill: true }}
+      ]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        y: {{ beginAtZero: true, title: {{ display: true, text: "MB" }} }},
+        x: {{ ticks: {{ maxTicksLimit: 8 }} }}
+      }}
+    }}
+  }});
+}}
+loadDashboardSummary();
+loadDashboardTraffic();
+setInterval(loadDashboardSummary, 30000);
+setInterval(loadDashboardTraffic, 30000);
+</script>
 """
 
     return shell("NetSpecter Dashboard", body, "Dashboard")
@@ -2127,9 +2092,9 @@ def devices():
         status_select += '</select>'
 
         live_data = live_host_speed(str(r["ip"]))
-        live_total = fmt_ntop_bits_as_bytes(live_data.get("total_bps", 0))
-        live_rx = fmt_ntop_bits_as_bytes(live_data.get("rx_bps", 0))
-        live_tx = fmt_ntop_bits_as_bytes(live_data.get("tx_bps", 0))
+        live_total = fmt_bits_as_bytes(live_data.get("total_bps", 0))
+        live_rx = fmt_bits_as_bytes(live_data.get("rx_bps", 0))
+        live_tx = fmt_bits_as_bytes(live_data.get("tx_bps", 0))
 
         table += f"""
 <tr data-ip="{ip}">
@@ -2449,23 +2414,49 @@ def device(ip):
 
     rows = query(
         """
+        WITH latest_day AS (
+            SELECT day
+            FROM traffic_intervals
+            WHERE ip=?
+            ORDER BY id DESC
+            LIMIT 1
+        ),
+        usage AS (
+            SELECT
+                t.ip,
+                MAX(t.id) AS max_id,
+                SUM(t.downloaded_mb) AS downloaded_mb,
+                SUM(t.uploaded_mb) AS uploaded_mb,
+                SUM(t.total_mb) AS total_mb
+            FROM traffic_intervals t
+            JOIN latest_day x ON x.day = t.day
+            WHERE t.ip=?
+        )
         SELECT
             COALESCE(o.name, d.name, t.name, t.ip) AS display_name,
             COALESCE(o.vendor, d.vendor, 'Unknown Vendor') AS display_vendor,
             COALESCE(o.device_type, d.device_type, 'Unknown') AS display_type,
             COALESCE(o.status, d.status, 'Active') AS display_status,
             CASE WHEN o.ip IS NOT NULL THEN 1 ELSE 0 END AS manual_locked,
-            t.*
-        FROM traffic_samples t
+            t.id,
+            t.ip,
+            t.name,
+            t.mac,
+            u.downloaded_mb,
+            u.uploaded_mb,
+            u.total_mb,
+            t.live_bps,
+            t.day,
+            t.ts
+        FROM usage u
+        JOIN traffic_intervals t
+            ON t.id = u.max_id
         LEFT JOIN devices d
             ON d.ip = t.ip
         LEFT JOIN device_overrides o
             ON o.ip = t.ip
-        WHERE t.ip=?
-        ORDER BY t.id DESC
-        LIMIT 1
         """,
-        (ip,),
+        (ip, ip),
     )
 
     if not rows:
@@ -2565,9 +2556,9 @@ def device(ip):
     live_speed_data = live_host_speed(ip)
     if not live_speed_data.get("total_bps") and device_name:
         live_speed_data = live_host_speed(device_name)
-    live_speed = fmt_ntop_bits_as_bytes(live_speed_data.get("total_bps") or r["live_bps"] or 0)
-    live_rx = fmt_ntop_bits_as_bytes(live_speed_data.get("rx_bps") or 0)
-    live_tx = fmt_ntop_bits_as_bytes(live_speed_data.get("tx_bps") or 0)
+    live_speed = fmt_bits_as_bytes(live_speed_data.get("total_bps") or r["live_bps"] or 0)
+    live_rx = fmt_bits_as_bytes(live_speed_data.get("rx_bps") or 0)
+    live_tx = fmt_bits_as_bytes(live_speed_data.get("tx_bps") or 0)
 
     body = f"""
 {topbar(h(device_name))}
@@ -2677,7 +2668,7 @@ def api_history():
     period = request.args.get("period", "1h").strip().lower()
     ip = request.args.get("ip", "").strip()
 
-    if period not in ["1h", "24h", "7d"]:
+    if period not in ["1h", "24h", "7d", "30d"]:
         period = "1h"
 
     if period == "1h":
@@ -2686,19 +2677,22 @@ def api_history():
     elif period == "24h":
         bucket_expr = "substr(ts, 1, 13) || ':00'"
         since_expr = "datetime('now','localtime','-24 hours')"
-    else:
+    elif period == "7d":
         bucket_expr = "day"
         since_expr = "date('now','localtime','-7 days')"
+    else:
+        bucket_expr = "day"
+        since_expr = "date('now','localtime','-30 days')"
 
     if ip:
         rows = query(
             f"""
             SELECT
                 {bucket_expr} AS bucket,
-                MAX(downloaded_mb) AS downloaded,
-                MAX(uploaded_mb) AS uploaded,
-                MAX(total_mb) AS total
-            FROM traffic_samples
+                SUM(downloaded_mb) AS downloaded,
+                SUM(uploaded_mb) AS uploaded,
+                SUM(total_mb) AS total
+            FROM traffic_intervals
             WHERE ip=?
               AND ts >= {since_expr}
             GROUP BY bucket
@@ -2718,10 +2712,10 @@ def api_history():
                 SELECT
                     {bucket_expr} AS bucket,
                     ip,
-                    MAX(downloaded_mb) AS downloaded,
-                    MAX(uploaded_mb) AS uploaded,
-                    MAX(total_mb) AS total
-                FROM traffic_samples
+                    SUM(downloaded_mb) AS downloaded,
+                    SUM(uploaded_mb) AS uploaded,
+                    SUM(total_mb) AS total
+                FROM traffic_intervals
                 WHERE ts >= {since_expr}
                 GROUP BY bucket, ip
             )
@@ -2813,7 +2807,7 @@ def history():
 
 <div class="panel">
   <h2>{subtitle}</h2>
-  <p class="history-sub">Graphs are built from traffic_samples. Values are cumulative MB totals per bucket.</p>
+  <p class="history-sub">Graphs show measured traffic used within each time bucket.</p>
 
   <form class="device-history-form" method="GET" action="/history">
     <input name="ip" placeholder="Optional device IP, e.g. {h(cfg().get('lan_prefix', DEFAULT_CONFIG['lan_prefix']))}58" value="{h(ip)}">
@@ -2825,6 +2819,7 @@ def history():
     <button class="history-btn" onclick="loadHistory('1h')">Last 1 Hour</button>
     <button class="history-btn" onclick="loadHistory('24h')">Last 24 Hours</button>
     <button class="history-btn" onclick="loadHistory('7d')">Last 7 Days</button>
+    <button class="history-btn" onclick="loadHistory('30d')">Last 30 Days</button>
   </div>
 
   <div class="chart-box">
@@ -2940,19 +2935,28 @@ def traffic():
 
     rows = query(
         f"""
-        SELECT
-            COALESCE(o.name, d.name, t.name, t.ip) AS name,
-            t.ip AS ip_sort,
-            t.*
-        FROM traffic_samples t
-        LEFT JOIN devices d ON d.ip = t.ip
-        LEFT JOIN device_overrides o ON o.ip = t.ip
-        JOIN (
-            SELECT ip, MAX(id) AS max_id
-            FROM traffic_samples
+        WITH usage AS (
+            SELECT
+                ip,
+                MAX(name) AS name,
+                MAX(mac) AS mac,
+                SUM(downloaded_mb) AS downloaded_mb,
+                SUM(uploaded_mb) AS uploaded_mb,
+                SUM(total_mb) AS total_mb,
+                MAX(live_bps) AS live_bps,
+                MAX(day) AS day,
+                MAX(ts) AS ts
+            FROM traffic_intervals
             WHERE day>=?
             GROUP BY ip
-        ) x ON t.id=x.max_id
+        )
+        SELECT
+            COALESCE(o.name, d.name, u.name, u.ip) AS name,
+            u.ip AS ip_sort,
+            u.*
+        FROM usage u
+        LEFT JOIN devices d ON d.ip = u.ip
+        LEFT JOIN device_overrides o ON o.ip = u.ip
         ORDER BY {sort_col} {direction_sql}
         LIMIT 200
         """,
@@ -2967,8 +2971,6 @@ def traffic():
             marker = " ↓" if direction == "desc" else " ↑"
         return f'<a class="sort-link" href="/traffic?range={range_key()}&type={h(mode)}&sort={h(key)}&dir={next_dir}">{label}{marker}</a>'
 
-    live_hosts = iftop_live_hosts()
-
     table = ""
     for r in rows:
         table += f"""
@@ -2978,19 +2980,37 @@ def traffic():
   <td>{fmt_mb(r['downloaded_mb'])}</td>
   <td>{fmt_mb(r['uploaded_mb'])}</td>
   <td>{fmt_mb(r['total_mb'])}</td>
-  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_ntop_bits_as_bytes(live_host_speed(str(r['ip'])).get('total_bps', 0))}</span></td>
+  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_bits_as_bytes(live_host_speed(str(r['ip'])).get('total_bps', 0))}</span></td>
 </tr>
 """
 
+    clear_notice = ""
+    if request.args.get("cleared") == "1":
+        clear_notice = "<div class='traffic-cleared'>Traffic history cleared. New traffic is now collecting from zero.</div>"
+    elif request.args.get("clear_error") == "1":
+        clear_notice = "<div class='traffic-clear-error'>Traffic history could not be cleared. Check the NetSpecter service log and try again.</div>"
+    elif request.args.get("collector_error") == "1":
+        clear_notice = "<div class='traffic-clear-error'>Traffic was cleared, but the collector did not start again. Run systemctl start netspecter-collector.</div>"
+
     body = f"""
 {topbar(title)}
-{time_picker()}
+<div class="traffic-controls">
+  {time_picker()}
+  <a class="traffic-clear-btn" href="/traffic/clear?range={range_key()}">Clear Traffic History</a>
+</div>
 <style>
+.traffic-controls {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }}
+.traffic-controls .time-picker {{ margin-left:8px; }}
+.traffic-clear-btn {{ display:inline-block; color:#ffdbe0; border:1px solid rgba(255,77,94,.42); background:rgba(255,77,94,.12); padding:9px 13px; border-radius:14px; font-size:12px; font-weight:800; text-decoration:none; }}
+.traffic-clear-btn:hover {{ background:rgba(255,77,94,.24); color:#fff; }}
+.traffic-cleared {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(0,214,183,.3); background:rgba(0,214,183,.10); color:#7df5df; font-weight:700; }}
+.traffic-clear-error {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(255,77,94,.38); background:rgba(255,77,94,.12); color:#ffdbe0; font-weight:700; }}
 .sort-link {{ color:#eaf6ff; text-decoration:none; }}
 .sort-link:hover {{ color:#14d8ff; }}
 tr[onclick] {{ cursor:pointer; }}
 tr[onclick]:hover {{ background:rgba(0,190,255,.07); }}
 </style>
+{clear_notice}
 <div class="panel">
 <table>
 <tr>
@@ -3006,6 +3026,55 @@ tr[onclick]:hover {{ background:rgba(0,190,255,.07); }}
 </div>
 """
     return shell(title, body, "Traffic")
+
+
+@app.route("/traffic/clear", methods=["GET", "POST"])
+def clear_traffic_history():
+    if request.method == "POST":
+        if not collector_service_action("stop"):
+            return redirect(f"/traffic?range={range_key()}&clear_error=1")
+
+        try:
+            init_db()
+            con = connect_db()
+            con.execute("DELETE FROM traffic_intervals")
+            con.execute("DELETE FROM traffic_samples")
+            con.execute("DELETE FROM live_device_speed")
+            con.commit()
+            con.close()
+        except Exception as e:
+            print(f"Traffic history clear failed: {e}")
+            collector_service_action("start")
+            return redirect(f"/traffic?range={range_key()}&clear_error=1")
+
+        if not collector_service_action("start"):
+            return redirect("/traffic?range=1d&collector_error=1")
+        return redirect("/traffic?range=1d&cleared=1")
+
+    sample_rows = query("SELECT COUNT(*) AS total FROM traffic_intervals")
+    sample_count = int(sample_rows[0]["total"] or 0) if sample_rows else 0
+
+    body = f"""
+{topbar('Clear Traffic History')}
+<style>
+.clear-warning {{ max-width:620px; }}
+.clear-warning p {{ color:#b8c7da; line-height:1.55; }}
+.clear-warning strong {{ color:#ff8997; }}
+.clear-actions {{ display:flex; gap:10px; align-items:center; margin-top:20px; }}
+.clear-actions a {{ color:#c5d3e4; text-decoration:none; font-weight:700; padding:11px 15px; }}
+</style>
+<div class="panel clear-warning">
+  <h2>Are you sure?</h2>
+  <p>This will permanently delete <strong>{sample_count:,} measured traffic intervals</strong> and reset the live traffic totals to zero.</p>
+  <p>Your DNS history, settings, login and edited device names will not be changed.</p>
+  <form method="post" class="clear-actions">
+    <button class="btn-red" type="submit">Yes, Clear Traffic History</button>
+    <a href="/traffic?range={range_key()}">Cancel</a>
+  </form>
+</div>
+"""
+    return shell("Clear Traffic History", body, "Traffic")
+
 
 @app.route("/applications")
 def applications():
@@ -3059,9 +3128,27 @@ def applications():
     if not app_rows:
         app_rows = "<div class='empty-state'>No application activity recorded today.</div>"
 
+    clear_notice = ""
+    if request.args.get("cleared") == "1":
+        clear_notice = "<div class='apps-cleared'>Application history cleared. New AdGuard activity will appear as it is imported.</div>"
+    elif request.args.get("clear_error") == "1":
+        clear_notice = "<div class='apps-clear-error'>Application history could not be cleared. Check the NetSpecter service log and try again.</div>"
+
     body = f"""
 {topbar('Applications')}
-{time_picker()}
+<div class="apps-controls">
+  {time_picker()}
+  <a class="apps-clear-btn" href="/applications/clear?range={range_key()}">Clear App History</a>
+</div>
+<style>
+.apps-controls {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }}
+.apps-controls .time-picker {{ margin-left:8px; }}
+.apps-clear-btn {{ display:inline-block; color:#ffdbe0; border:1px solid rgba(255,77,94,.42); background:rgba(255,77,94,.12); padding:9px 13px; border-radius:14px; font-size:12px; font-weight:800; text-decoration:none; }}
+.apps-clear-btn:hover {{ background:rgba(255,77,94,.24); color:#fff; }}
+.apps-cleared {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(0,214,183,.3); background:rgba(0,214,183,.10); color:#7df5df; font-weight:700; }}
+.apps-clear-error {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(255,77,94,.38); background:rgba(255,77,94,.12); color:#ffdbe0; font-weight:700; }}
+</style>
+{clear_notice}
 <div class="apps-summary">
   <div class="mini-card"><span>DNS Queries</span><b>{total_queries:,}</b></div>
   <div class="mini-card"><span>Categories</span><b>{len(rows):,}</b></div>
@@ -3082,6 +3169,51 @@ def applications():
 </div>
 """
     return shell("Applications", body, "Applications")
+
+
+@app.route("/applications/clear", methods=["GET", "POST"])
+def clear_application_history():
+    if request.method == "POST":
+        try:
+            init_db()
+            con = connect_db()
+            con.execute("DELETE FROM dns_querylog")
+            con.execute(
+                "INSERT INTO dns_import_state (id, cleared_at) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET cleared_at=excluded.cleared_at",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+            con.commit()
+            con.close()
+        except Exception as e:
+            print(f"Application history clear failed: {e}")
+            return redirect(f"/applications?range={range_key()}&clear_error=1")
+
+        return redirect("/applications?range=1d&cleared=1")
+
+    log_rows = query("SELECT COUNT(*) AS total FROM dns_querylog")
+    query_count = int(log_rows[0]["total"] or 0) if log_rows else 0
+
+    body = f"""
+{topbar('Clear App History')}
+<style>
+.clear-warning {{ max-width:620px; }}
+.clear-warning p {{ color:#b8c7da; line-height:1.55; }}
+.clear-warning strong {{ color:#ff8997; }}
+.clear-actions {{ display:flex; gap:10px; align-items:center; margin-top:20px; }}
+.clear-actions a {{ color:#c5d3e4; text-decoration:none; font-weight:700; padding:11px 15px; }}
+</style>
+<div class="panel clear-warning">
+  <h2>Are you sure?</h2>
+  <p>This will permanently delete <strong>{query_count:,} stored DNS/application activity records</strong> and clear Top Applications.</p>
+  <p>Your traffic history, settings, login and edited device names will not be changed.</p>
+  <form method="post" class="clear-actions">
+    <button class="btn-red" type="submit">Yes, Clear App History</button>
+    <a href="/applications?range={range_key()}">Cancel</a>
+  </form>
+</div>
+"""
+    return shell("Clear App History", body, "Applications")
 
 
 @app.route("/applications/<path:category>")
@@ -3412,11 +3544,20 @@ def export_csv(kind):
     if kind == "traffic":
         rows = query(
             """
-            SELECT ip, name, mac, downloaded_mb, uploaded_mb, total_mb, live_bps, day, ts
-            FROM traffic_samples
+            SELECT
+                ip,
+                MAX(name) AS name,
+                MAX(mac) AS mac,
+                SUM(downloaded_mb) AS downloaded_mb,
+                SUM(uploaded_mb) AS uploaded_mb,
+                SUM(total_mb) AS total_mb,
+                MAX(live_bps) AS live_bps,
+                day,
+                MAX(ts) AS ts
+            FROM traffic_intervals
             WHERE day>=?
+            GROUP BY day, ip
             ORDER BY ts DESC
-            LIMIT 10000
             """,
             (start_day,),
         )
@@ -3459,13 +3600,6 @@ def health_page():
     c = cfg()
     health = system_health()
     ok_adguard, _ = ag_get("/status")
-    ntop_ok = False
-    try:
-        base = str(c.get("ntop_url", "")).rstrip("/")
-        if base:
-            ntop_ok = requests.get(base, timeout=2).status_code < 500
-    except Exception:
-        ntop_ok = False
     bridge_ok = False
     if psutil:
         try:
@@ -3476,7 +3610,6 @@ def health_page():
     services = [
         ("Collector", health["collector_state"] == "OK", health["last_seen"]),
         ("AdGuard API", ok_adguard, c.get("adguard_url", "")),
-        ("ntopng", ntop_ok, c.get("ntop_url", "")),
         ("Bridge Interface", bridge_ok, c.get("packet_iface", "br0")),
         ("Database", DB_PATH.exists(), f"{health['db_size']} MB"),
         ("Web App", True, "Online"),
@@ -3624,36 +3757,35 @@ def settings():
     setting_help = {
         "gateway_ip": "Router/gateway IP. Leave blank to use LAN Prefix + 1. NetSpecter excludes it from device usage totals and live collector stats.",
         "ignore_ips": "Extra IPs to ignore, separated by commas. The gateway IP is always ignored automatically.",
-        "packet_iface": "Interface NetSpecter watches for live device traffic, usually the bridge such as br0.",
-        "iftop_iface": "Optional fallback interface for live traffic checks. Usually the same bridge/interface as above.",
+        "packet_iface": "Bridge carrying monitored traffic, usually br0. Linux nftables counts forwarded bytes on this bridge.",
         "lan_prefix": "LAN prefix used to identify local devices, for example 192.168.1.",
         "adguard_url": "AdGuard Home URL used for DNS stats and controls.",
-        "ntop_url": "ntopng URL used for external analytics links.",
+        "collect_interval_seconds": "Seconds between measured traffic interval writes. Live speed freshness follows this value.",
+        "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 30 for the 30-day view.",
+        "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep.",
         "auth_enabled": "Enable or disable the NetSpecter login screen.",
         "admin_user": "Username used to sign in to NetSpecter.",
     }
     setting_labels = {
         "gateway_ip": "Gateway IP",
         "ignore_ips": "Extra Ignored IPs",
-        "packet_iface": "Live Traffic Interface",
-        "iftop_iface": "Fallback Traffic Interface",
+        "packet_iface": "Monitored Bridge Interface",
         "lan_prefix": "LAN Prefix",
         "adguard_url": "AdGuard URL",
         "adguard_user": "AdGuard User",
         "adguard_pass": "AdGuard Password",
-        "ntop_url": "ntopng URL",
-        "ntop_user": "ntopng User",
-        "ntop_pass": "ntopng Password",
-        "ntop_ifid": "ntopng Interface ID",
+        "collect_interval_seconds": "Traffic Sample Interval Seconds",
+        "traffic_retention_days": "Traffic Retention Days",
+        "dns_retention_days": "DNS/App Retention Days",
         "web_host": "Web Host",
         "web_port": "Web Port",
         "auth_enabled": "Login Enabled",
         "admin_user": "Admin Username",
     }
     preferred_order = [
-        "gateway_ip", "ignore_ips", "lan_prefix", "packet_iface", "iftop_iface",
+        "gateway_ip", "ignore_ips", "lan_prefix", "packet_iface",
         "adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds",
-        "ntop_url", "ntop_user", "ntop_pass", "ntop_ifid",
+        "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
         "web_host", "web_port",
         "auth_enabled", "admin_user",
     ]
@@ -3662,7 +3794,7 @@ def settings():
     fields = ""
     for key in ordered_keys:
         val = c[key]
-        if key in ["app_name", "tagline", "admin_password_hash"]:
+        if key in ["app_name", "tagline", "admin_password_hash"] or key in HIDDEN_UNUSED_SETTINGS:
             continue
         typ = "password" if "pass" in key else "text"
         display_val = "" if key in SENSITIVE_CONFIG_KEYS else ", ".join(val) if isinstance(val, list) else val

@@ -3,33 +3,34 @@
 NetSpecter Live Packet Collector
 
 What this file does:
-- Watches live network packets on the selected network interface.
-- Works out which LAN device is uploading or downloading.
+- Installs private nftables bridge counters for each LAN device IP.
+- Reads accurate kernel-counted upload and download byte differences.
 - Calculates live speed per device.
 - Saves live speed into SQLite.
 - Saves device details like IP, MAC, vendor and type.
-- Saves daily usage totals.
-- Restores today's totals after a reboot or service restart.
+- Saves measured traffic bytes for each collection interval.
 - Ignores the gateway/router so it does not appear as the top user.
 - Imports AdGuard Home DNS querylog into dns_querylog.
 - Classifies domains into application categories for Top Applications.
 
 Important:
 - Speeds in live_device_speed are stored as BYTES per second.
-- live_bps in traffic_samples is stored as BITS per second.
+- live_bps in traffic_intervals is stored as BITS per second.
 - dns_querylog powers Top Applications and per-device application views.
 """
 
+import fcntl
+import ipaddress
 import json
 import os
 import sqlite3
+import subprocess
+import threading
 import time
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import requests
-from scapy.all import sniff, Ether, IP
 
 try:
     from cryptography.fernet import Fernet, InvalidToken
@@ -63,16 +64,18 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 DB_PATH = DATA_DIR / "netspecter.db"
 OUI_PATH = DATA_DIR / "oui_cache.json"
 SECRET_KEY_PATH = CONFIG_DIR / "secret.key"
+COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "ntop_pass"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass"}
+collector_lock_handle = None
 
 
 # ---------------------------------------------------
 # Default settings
 # ---------------------------------------------------
 # packet_iface:
-#   The network interface to sniff.
-#   Examples: br0, enp1s0, enp2s0, eth0.
+#   The bridge whose forwarded device traffic is counted by nftables.
+#   Example: br0.
 #
 # ignore_ips:
 #   IPs excluded from device totals.
@@ -89,6 +92,8 @@ DEFAULT_CONFIG = {
     "lan_prefix": "192.168.1.",
     "packet_iface": "br0",
     "collect_interval_seconds": 2,
+    "traffic_retention_days": 30,
+    "dns_retention_days": 14,
     "gateway_ip": "",
     "ignore_ips": [],
 
@@ -100,13 +105,32 @@ DEFAULT_CONFIG = {
 
 
 # ---------------------------------------------------
-# Runtime counters
+# Kernel counter state
 # ---------------------------------------------------
 
-stats = defaultdict(lambda: {"rx": 0, "tx": 0, "mac": ""})
-last_stats = defaultdict(lambda: {"rx": 0, "tx": 0})
-total_stats = defaultdict(lambda: {"rx": 0, "tx": 0})
 imported_dns_keys = set()
+NFT_FAMILY = "bridge"
+NFT_TABLE = "netspecter"
+NFT_CHAIN = "forward"
+nft_config_signature = None
+nft_previous_counters = {}
+nft_active_ips = set()
+
+
+def acquire_collector_lock():
+    """Allow only one collector writer to update measured traffic."""
+    global collector_lock_handle
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    handle = COLLECTOR_LOCK_PATH.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        print("Another NetSpecter collector is already running; exiting.")
+        return False
+
+    collector_lock_handle = handle
+    return True
 
 
 def load_json(path, default):
@@ -343,7 +367,9 @@ def parse_adguard_time(value):
                 tz = right[pos:]
                 text = left + "." + frac[:6] + tz
 
-        dt = datetime.fromisoformat(text)
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
         return dt.strftime("%Y-%m-%d %H:%M:%S")
 
     except Exception:
@@ -361,7 +387,10 @@ def init_db():
       Known devices and metadata.
 
     traffic_samples:
-      Historical usage samples and daily totals.
+      Legacy cumulative samples kept only so older databases remain readable.
+
+    traffic_intervals:
+      Additive measured bytes seen during each collection interval.
 
     dns_querylog:
       Imported AdGuard DNS logs for applications/blocked views.
@@ -431,6 +460,23 @@ def init_db():
 
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS traffic_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            name TEXT,
+            mac TEXT,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            live_bps REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+        """
+    )
+
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS dns_querylog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             day TEXT,
@@ -443,8 +489,19 @@ def init_db():
         """
     )
 
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dns_import_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            cleared_at TEXT
+        )
+        """
+    )
+
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_day_ip ON traffic_samples(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_ip_ts ON traffic_samples(ip, ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_category ON dns_querylog(category)")
@@ -493,126 +550,209 @@ def write_heartbeat(status="OK", note=""):
     )
 
 
-def load_today_totals():
-    """
-    Restore today's totals after a reboot or collector restart.
-
-    Without this, total_stats starts at zero every time the service starts.
-    """
-    day = datetime.now().strftime("%Y-%m-%d")
+def prune_history(config=None):
+    """Apply configured history retention without altering today's totals."""
+    c = config or cfg()
+    traffic_days = positive_int(c.get("traffic_retention_days", 30), 30, 1)
+    dns_days = positive_int(c.get("dns_retention_days", 14), 14, 1)
+    traffic_cutoff = f"-{traffic_days - 1} days"
+    dns_cutoff = f"-{dns_days - 1} days"
 
     try:
         con = connect_db()
-        con.row_factory = sqlite3.Row
-
-        rows = con.execute(
-            """
-            SELECT ip, downloaded_mb, uploaded_mb
-            FROM traffic_samples
-            WHERE day = ?
-            AND id IN (
-                SELECT MAX(id)
-                FROM traffic_samples
-                WHERE day = ?
-                GROUP BY ip
-            )
-            """,
-            (day, day),
-        ).fetchall()
-
+        con.execute(
+            "DELETE FROM traffic_intervals WHERE day < date('now', 'localtime', ?)",
+            (traffic_cutoff,),
+        )
+        con.execute(
+            "DELETE FROM traffic_samples WHERE day < date('now', 'localtime', ?)",
+            (traffic_cutoff,),
+        )
+        con.execute(
+            "DELETE FROM dns_querylog WHERE day < date('now', 'localtime', ?)",
+            (dns_cutoff,),
+        )
+        con.commit()
         con.close()
     except Exception as e:
-        print(f"Could not restore today's totals: {e}")
-        return
-
-    for row in rows:
-        ip = row["ip"]
-        total_stats[ip]["rx"] = float(row["downloaded_mb"] or 0) * 1024 * 1024
-        total_stats[ip]["tx"] = float(row["uploaded_mb"] or 0) * 1024 * 1024
+        print(f"History retention cleanup failed: {e}")
 
 
-def handle_packet(pkt):
-    """
-    Process each captured packet.
+def lan_network(config=None):
+    """Convert the LAN prefix setting into the IPv4 subnet counted by nftables."""
+    text = str((config or cfg()).get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]) or "").strip()
+    if text.endswith("."):
+        text = f"{text}0/24"
+    elif "/" not in text:
+        text = f"{text}/24"
+    network = ipaddress.ip_network(text, strict=False)
+    if network.version != 4:
+        raise ValueError("LAN Prefix must identify an IPv4 network")
+    if network.num_addresses > 1024:
+        raise ValueError("LAN Prefix is too large; use a /22 or smaller network")
+    return network
 
-    Upload logic:
-    - If source IP is inside the LAN, that device uploaded traffic.
 
-    Download logic:
-    - If destination IP is inside the LAN, that device downloaded traffic.
-    """
+def nft_signature(config=None):
+    c = config or cfg()
+    return (
+        str(c.get("packet_iface") or "br0"),
+        str(lan_network(c)),
+        tuple(sorted(ignored_ips(c))),
+    )
+
+
+def install_nft_counters(config=None):
+    """Create an isolated bridge counter table; no traffic is blocked or redirected."""
+    global nft_config_signature, nft_previous_counters, nft_active_ips
+    c = config or cfg()
+    interface, network_text, ignored = nft_signature(c)
+    network = ipaddress.ip_network(network_text)
+    ignored_set = set(ignored)
+    hosts = [str(ip) for ip in network.hosts() if str(ip) not in ignored_set]
+
+    subprocess.run(
+        ["nft", "delete", "table", NFT_FAMILY, NFT_TABLE],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+    lines = [
+        f"table {NFT_FAMILY} {NFT_TABLE} {{",
+        f"  chain {NFT_CHAIN} {{",
+        "    type filter hook forward priority filter; policy accept;",
+    ]
+    for ip in hosts:
+        lines.append(
+            f'    ip saddr {ip} ip daddr != {network} counter comment "netspecter:tx:{ip}"'
+        )
+        lines.append(
+            f'    ip daddr {ip} ip saddr != {network} counter comment "netspecter:rx:{ip}"'
+        )
+    lines.extend(["  }", "}"])
+    result = subprocess.run(
+        ["nft", "-f", "-"],
+        input="\n".join(lines) + "\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nftables counter setup failed: {result.stderr.strip()}")
+
+    nft_config_signature = (interface, network_text, ignored)
+    nft_previous_counters = {}
+    nft_active_ips = set()
+    print(f"nftables traffic counters installed for {network_text} on bridge traffic ({interface})")
+
+
+def read_nft_counters():
+    """Return {(direction, ip): bytes} from the NetSpecter nftables table."""
+    result = subprocess.run(
+        ["nft", "-j", "list", "chain", NFT_FAMILY, NFT_TABLE, NFT_CHAIN],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nftables counter read failed: {result.stderr.strip()}")
+
+    payload = json.loads(result.stdout)
+    counters = {}
+    for item in payload.get("nftables", []):
+        rule = item.get("rule") if isinstance(item, dict) else None
+        if not rule:
+            continue
+        comment = str(rule.get("comment") or "")
+        if not comment.startswith("netspecter:"):
+            continue
+        parts = comment.split(":", 2)
+        if len(parts) != 3 or parts[1] not in ("rx", "tx"):
+            continue
+        total_bytes = 0
+        for expr in rule.get("expr", []):
+            if isinstance(expr, dict) and isinstance(expr.get("counter"), dict):
+                total_bytes = int(expr["counter"].get("bytes", 0) or 0)
+                break
+        counters[(parts[1], parts[2])] = total_bytes
+    return counters
+
+
+def read_arp_macs():
+    """Use locally known ARP entries when available; traffic counting does not depend on this."""
+    macs = {}
     try:
-        if not pkt.haslayer(IP) or not pkt.haslayer(Ether):
-            return
-
-        c = cfg()
-        lan_prefix = str(c.get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]))
-        ignore_ips = ignored_ips(c)
-
-        src_ip = pkt[IP].src
-        dst_ip = pkt[IP].dst
-        src_mac = pkt[Ether].src.upper()
-        dst_mac = pkt[Ether].dst.upper()
-        size = len(pkt)
-
-        if src_ip.startswith(lan_prefix) and src_ip not in ignore_ips:
-            stats[src_ip]["tx"] += size
-            stats[src_ip]["mac"] = src_mac
-            total_stats[src_ip]["tx"] += size
-
-        if dst_ip.startswith(lan_prefix) and dst_ip not in ignore_ips:
-            stats[dst_ip]["rx"] += size
-            stats[dst_ip]["mac"] = dst_mac
-            total_stats[dst_ip]["rx"] += size
-    except Exception as e:
-        print(f"Packet handling failed: {e}")
+        for line in Path("/proc/net/arp").read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 4 and fields[3] != "00:00:00:00:00:00":
+                macs[fields[0]] = fields[3].upper()
+    except Exception:
+        pass
+    return macs
 
 
 def flush_loop():
     """
-    Packet database update loop.
+    Kernel-counter database update loop.
 
     Every few seconds it:
-    - Calculates live RX/TX speed
+    - Reads per-device byte counter differences from nftables
+    - Calculates live RX/TX speed from those differences
     - Updates live_device_speed
     - Updates devices
-    - Inserts traffic_samples rows
+    - Inserts additive traffic_intervals rows
     """
+    global nft_config_signature, nft_previous_counters, nft_active_ips
     init_db()
-    load_today_totals()
+    last_flush_at = time.monotonic()
+    last_prune_day = ""
 
     while True:
         c = cfg()
         interval = positive_int(c.get("collect_interval_seconds", 2), 2, 1)
+        try:
+            signature = nft_signature(c)
+            if signature != nft_config_signature:
+                install_nft_counters(c)
 
-        time.sleep(interval)
+            current_counters = read_nft_counters()
+            flush_at = time.monotonic()
+            elapsed = max(flush_at - last_flush_at, 0.001)
+            last_flush_at = flush_at
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            day = datetime.now().strftime("%Y-%m-%d")
+            macs = read_arp_macs()
+            deltas = {}
+            for (direction, ip), total_bytes in current_counters.items():
+                previous = nft_previous_counters.get((direction, ip), 0)
+                delta = max(total_bytes - previous, 0)
+                nft_previous_counters[(direction, ip)] = total_bytes
+                if delta:
+                    nft_active_ips.add(ip)
+                if delta or ip in nft_active_ips:
+                    deltas.setdefault(ip, {"rx": 0, "tx": 0})
+                    deltas[ip][direction] = delta
+            write_heartbeat("OK", "nftables counters running")
+        except Exception as e:
+            print(f"nftables traffic collection failed: {e}")
+            write_heartbeat("Counter Retry", str(e))
+            time.sleep(interval)
+            continue
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        day = datetime.now().strftime("%Y-%m-%d")
-        write_heartbeat("OK", "flush loop running")
+        for ip, cur in deltas.items():
+            rx_delta = cur["rx"]
+            tx_delta = cur["tx"]
 
-        for ip, cur in list(stats.items()):
-            prev = last_stats[ip]
-
-            rx_delta = max(cur["rx"] - prev["rx"], 0)
-            tx_delta = max(cur["tx"] - prev["tx"], 0)
-
-            rx_Bps = rx_delta / interval
-            tx_Bps = tx_delta / interval
+            rx_Bps = rx_delta / elapsed
+            tx_Bps = tx_delta / elapsed
             total_Bps = rx_Bps + tx_Bps
 
-            last_stats[ip] = {
-                "rx": cur["rx"],
-                "tx": cur["tx"],
-            }
-
-            mac = cur.get("mac", "")
+            mac = macs.get(ip, "")
             vendor = vendor_from_mac(mac)
             dtype = classify_device(vendor)
-
-            total_rx_mb = total_stats[ip]["rx"] / 1024 / 1024
-            total_tx_mb = total_stats[ip]["tx"] / 1024 / 1024
-            total_mb = total_rx_mb + total_tx_mb
 
             run_sql(
                 """
@@ -635,8 +775,8 @@ def flush_loop():
                     (ip, name, mac, vendor, device_type, status, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?, 'Active', ?, ?)
                 ON CONFLICT(ip) DO UPDATE SET
-                    mac=excluded.mac,
-                    vendor=excluded.vendor,
+                    mac=CASE WHEN excluded.mac != '' THEN excluded.mac ELSE devices.mac END,
+                    vendor=CASE WHEN excluded.mac != '' THEN excluded.vendor ELSE devices.vendor END,
                     device_type=CASE
                         WHEN devices.device_type IS NULL
                           OR devices.device_type=''
@@ -649,24 +789,34 @@ def flush_loop():
                 (ip, ip, mac, vendor, dtype, now, now),
             )
 
-            run_sql(
-                """
-                INSERT INTO traffic_samples
-                    (ip, name, mac, downloaded_mb, uploaded_mb, total_mb, live_bps, day, ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    ip,
-                    ip,
-                    mac,
-                    total_rx_mb,
-                    total_tx_mb,
-                    total_mb,
-                    total_Bps * 8,
-                    day,
-                    now,
-                ),
-            )
+            interval_rx_mb = rx_delta / 1024 / 1024
+            interval_tx_mb = tx_delta / 1024 / 1024
+            interval_total_mb = interval_rx_mb + interval_tx_mb
+
+            if interval_total_mb > 0:
+                run_sql(
+                    """
+                    INSERT INTO traffic_intervals
+                        (ip, name, mac, downloaded_mb, uploaded_mb, total_mb, live_bps, day, ts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ip,
+                        ip,
+                        mac,
+                        interval_rx_mb,
+                        interval_tx_mb,
+                        interval_total_mb,
+                        (rx_delta + tx_delta) / elapsed * 8,
+                        day,
+                        now,
+                    ),
+                )
+
+        if day != last_prune_day:
+            prune_history(c)
+            last_prune_day = day
+        time.sleep(interval)
 
 
 def import_adguard_querylog():
@@ -709,6 +859,15 @@ def import_adguard_querylog():
     if not isinstance(rows, list):
         return
 
+    cutoff = ""
+    try:
+        con = connect_db()
+        state = con.execute("SELECT cleared_at FROM dns_import_state WHERE id=1").fetchone()
+        con.close()
+        cutoff = str(state[0] or "") if state else ""
+    except Exception as e:
+        print(f"DNS history cutoff read failed: {e}")
+
     imported = 0
 
     for item in rows:
@@ -726,6 +885,9 @@ def import_adguard_querylog():
         category = app_from_domain(domain)
 
         if not domain or not client:
+            continue
+
+        if cutoff and ts <= cutoff:
             continue
 
         # Fast duplicate protection for this running process.
@@ -769,19 +931,19 @@ def adguard_querylog_loop():
 
 
 if __name__ == "__main__":
-    import threading
+    if not acquire_collector_lock():
+        raise SystemExit(1)
 
     while True:
         try:
             init_db()
-            load_today_totals()
             break
         except Exception as e:
             print(f"Collector startup failed: {e}")
             print("Retrying startup in 10 seconds")
             time.sleep(10)
 
-    # Thread 1: packet speed and usage totals.
+    # Thread 1: nftables byte counters and traffic totals.
     packet_thread = threading.Thread(target=flush_loop, daemon=True)
     packet_thread.start()
 
@@ -791,18 +953,10 @@ if __name__ == "__main__":
 
     interface = str(cfg().get("packet_iface") or "br0")
 
-    print(f"NetSpecter collector started on interface: {interface}")
+    print(f"NetSpecter nftables collector started for bridge: {interface}")
     print(f"Database: {DB_PATH}")
     print("AdGuard DNS querylog importer started")
     write_heartbeat("OK", "collector started")
 
     while True:
-        try:
-            sniff(iface=interface, prn=handle_packet, store=False)
-        except KeyboardInterrupt:
-            raise
-        except Exception as e:
-            print(f"Packet capture failed on {interface}: {e}")
-            write_heartbeat("Capture Retry", f"packet capture failed on {interface}: {e}")
-            print("Retrying packet capture in 10 seconds")
-            time.sleep(10)
+        time.sleep(3600)

@@ -20,8 +20,7 @@ It combines:
 - DNS analytics from AdGuard Home
 - Device discovery and vendor classification
 - Historical traffic views
-- ntopng integration
-- Bridge-mode packet monitoring
+- Bridge-mode kernel traffic accounting
 - Login-protected dashboard
 - CSV exports and service health checks
 
@@ -218,7 +217,6 @@ The installer:
 
 - Updates Debian and installs initial setup tools
 - Installs AdGuard Home first and pauses for its browser setup
-- Installs ntopng from signed stable Debian 12 `x64/` and `all/` repositories on the second run
 - Installs NetSpecter to `/opt/netspecter`
 - Creates config in `/etc/netspecter`
 - Stores runtime data in `/var/lib/netspecter`
@@ -236,14 +234,14 @@ http://SERVER-IP:3000
 
 Follow the step-by-step [AdGuard Home Setup Guide](ADGUARD-SETUP.md) during this stage.
 
-Set the AdGuard web/admin port to `80`, leaving port `3000` available for ntopng. Once AdGuard setup is complete, rerun the installer:
+Set the AdGuard web/admin port to `80`, matching the recommended AdGuard setup. Once AdGuard setup is complete, rerun the installer:
 
 ```bash
 cd /root/netspecter
 ./install.sh
 ```
 
-The second run installs ntopng and NetSpecter. Then open NetSpecter:
+The second run installs NetSpecter. Then open NetSpecter:
 
 ```text
 http://SERVER-IP:5050
@@ -262,9 +260,9 @@ Configure:
 - Gateway IP
 - LAN prefix
 - Live traffic interface, usually `br0`
-- Fallback traffic interface, usually `br0`
 - AdGuard URL/user/password
-- ntopng URL/user/password/interface ID
+- Traffic retention days, use `30` to keep the full 30-day traffic view
+- DNS/App retention days for AdGuard-derived application history
 
 Service passwords are encrypted in `/etc/netspecter/config.json` after saving Settings.
 
@@ -290,6 +288,47 @@ nslookup google.com YOUR-NETSPECTER-IP
 ```
 
 Requests should then appear in the AdGuard Query Log and in NetSpecter DNS/application views.
+
+---
+
+## What The Numbers Mean
+
+Traffic totals are measured by Linux `nftables` byte counters on bridge-forwarded IPv4 traffic. NetSpecter creates its own `bridge netspecter` table and reads counter changes for each LAN IP; it does not inspect every packet in Python. This is accurate at full download speed and adds no blocking rules.
+
+The configured LAN Prefix identifies the counted network, for example `192.168.1.` counts `192.168.1.0/24`. Gateway IP and Extra Ignored IPs are excluded. LAN-to-LAN and broadcast traffic are not counted as internet usage.
+
+`Download`, `Upload`, `Total Traffic`, Traffic History and the dashboard graph all use differences read from those kernel counters. A collector restart rebuilds its private counters at zero and then records only fresh traffic; it must not manufacture a large baseline total.
+
+`Top Applications` and application detail pages are different: they are based on AdGuard DNS queries. They show which devices looked up domains classified for an application and how often. DNS cannot prove how many bytes were used by YouTube, Netflix or another application, so NetSpecter does not present application rows as data usage.
+
+### Replacing Older Traffic History
+
+Versions that stored cumulative collector snapshots can contain inflated history if multiple collectors ran or a collector restarted. The installer stops orphaned collector processes during an update. After updating, verify the running collector:
+
+```bash
+pgrep -af live_packet_collector.py
+```
+
+`pgrep` should show exactly one running collector under `/opt/netspecter`. If it does not, run:
+
+```bash
+systemctl stop netspecter-collector
+pkill -f live_packet_collector.py || true
+systemctl start netspecter-collector
+pgrep -af live_packet_collector.py
+```
+
+In NetSpecter, open **Traffic**, choose **Clear Traffic History**, confirm the reset, and allow fresh kernel-counted data to collect.
+
+For a simple sanity test, download a known-size file from one LAN client after clearing traffic. That client's download total should rise by roughly the file size plus normal network overhead, not jump by gigabytes without corresponding traffic.
+
+Check the live kernel counters if troubleshooting:
+
+```bash
+nft list chain bridge netspecter forward
+```
+
+Rules in this table are counters only with an `accept` policy; they do not alter forwarding or DNS filtering.
 
 ---
 
@@ -338,6 +377,30 @@ Rerunning the installer updates application files and services while preserving 
 ```text
 /etc/netspecter/config.json
 /opt/AdGuardHome/AdGuardHome.yaml
+```
+
+Traffic collected by older cumulative-snapshot versions is intentionally not used by current totals. See **Replacing Older Traffic History** above when upgrading an existing appliance.
+
+---
+
+## Removing ntopng From An Older Install
+
+NetSpecter now uses Linux `nftables` counters for traffic totals and does not require `ntopng` or its package repository. On a system that installed an earlier NetSpecter build, remove ntopng as `root`:
+
+```bash
+systemctl disable --now ntopng 2>/dev/null || true
+apt purge -y ntopng ntopng-data apt-ntop apt-ntop-stable || true
+rm -f /etc/apt/sources.list.d/ntop.list /usr/share/keyrings/ntop-archive-keyring.gpg /tmp/ntop.key
+apt update
+apt autoremove --purge -y
+```
+
+`redis-server` was previously installed for ntopng. NetSpecter does not use Redis; remove it too only when no other service on your appliance depends on it:
+
+```bash
+systemctl disable --now redis-server 2>/dev/null || true
+apt purge -y redis-server redis-tools
+apt autoremove --purge -y
 ```
 
 ---
