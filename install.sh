@@ -49,7 +49,7 @@ if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok in
   curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
 fi
 apt remove -y speedtest-cli >/dev/null 2>&1 || true
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git iftop bmon vnstat ieee-data speedtest
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data speedtest
 
 echo "[4/9] Creating folders..."
 mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$DATA_DIR"

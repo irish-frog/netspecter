@@ -168,6 +168,23 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn('return "Private / Random MAC"', collector)
         self.assertIn("ieee-data", installer)
 
+    def test_removed_legacy_live_probe_is_not_shipped(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        installer = (SOURCE_DIR / "install.sh").read_text()
+        self.assertNotIn("iftop_live_hosts", source)
+        self.assertNotIn("iftop_iface", source)
+        self.assertNotRegex(installer, r"\biftop\b")
+        self.assertFalse((SOURCE_DIR / "static" / "netspecter-logo-wide.png").exists())
+
+    def test_unsupported_legacy_config_keys_are_removed_on_load(self):
+        legacy = self.module.DEFAULT_CONFIG.copy()
+        legacy["old_unused_password"] = "not-needed"
+        self.module.CONFIG_PATH.write_text(json.dumps(legacy))
+        loaded = self.module.cfg()
+        persisted = json.loads(self.module.CONFIG_PATH.read_text())
+        self.assertNotIn("old_unused_password", loaded)
+        self.assertNotIn("old_unused_password", persisted)
+
     def test_network_map_uses_cached_monitored_destination_locations(self):
         source = (SOURCE_DIR / "app.py").read_text()
         collector = (SOURCE_DIR / "live_packet_collector.py").read_text()

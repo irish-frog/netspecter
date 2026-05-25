@@ -82,19 +82,7 @@ DEFAULT_CONFIG = {
     "public_ip_cache_seconds": 1800,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "ntop_pass"}
-HIDDEN_UNUSED_SETTINGS = {
-    "alerts_retention_days",
-    "daily_usage_warning_mb",
-    "high_bandwidth_mbps",
-    "iftop_iface",
-    "ntop_ifid",
-    "ntop_pass",
-    "ntop_user",
-    "ntop_url",
-    "querylog_retention_days",
-    "web_refresh_seconds",
-}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass"}
 ENCRYPTED_PREFIX = "enc:"
 
 NOISE_DOMAINS = [
@@ -248,7 +236,10 @@ def cfg():
         data["tagline"] = "Monitor | Filter | Protect"
         return data
 
-    changed = False
+    unsupported_keys = set(data) - set(DEFAULT_CONFIG)
+    changed = bool(unsupported_keys)
+    if unsupported_keys:
+        data = {key: value for key, value in data.items() if key in DEFAULT_CONFIG}
 
     for key, value in DEFAULT_CONFIG.items():
         if key not in data:
@@ -904,152 +895,6 @@ def fmt_bits_as_bytes(value):
         bits = 0.0
 
     return fmt_bytes_per_sec(bits / 8)
-
-
-def _iftop_rate_to_bits(value, unit):
-    """Convert iftop terminal units to bits/sec. iftop default units are bits/sec."""
-    try:
-        num = float(str(value).replace(",", ""))
-    except Exception:
-        return 0.0
-
-    u = (unit or "").strip()
-    if u in ["b", "bit", "bits"]:
-        return num
-    if u in ["Kb", "Kbit", "Kbits"]:
-        return num * 1_000
-    if u in ["Mb", "Mbit", "Mbits"]:
-        return num * 1_000_000
-    if u in ["Gb", "Gbit", "Gbits"]:
-        return num * 1_000_000_000
-    # Defensive fallbacks if iftop is configured for bytes.
-    if u in ["B", "Byte", "Bytes"]:
-        return num * 8
-    if u in ["KB", "K", "KByte", "KBytes"]:
-        return num * 1024 * 8
-    if u in ["MB", "M", "MByte", "MBytes"]:
-        return num * 1024 * 1024 * 8
-    if u in ["GB", "G", "GByte", "GBytes"]:
-        return num * 1024 * 1024 * 1024 * 8
-    return num
-
-
-def _parse_iftop_rate(text):
-    import re
-    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)([KMG]?b|[KMG]?B)$", str(text).strip())
-    if not m:
-        return 0.0
-    return _iftop_rate_to_bits(m.group(1), m.group(2))
-
-
-def _is_lan_host(text):
-    text = str(text or "").strip()
-    lan_prefix = str(cfg().get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]))
-    try:
-        return text.startswith(lan_prefix) or text.endswith(".local") or not ipaddress.ip_address(text)
-    except Exception:
-        # Hostnames from iftop, e.g. Gabs-pc / homeassistant, are still local clients.
-        if any(x in text.lower() for x in ["one.one.one.one", "dns", "quad9", "google", "cloudflare"]):
-            return False
-        return bool(text and "." not in text)
-
-
-def _looks_like_ip(text):
-    try:
-        ipaddress.ip_address(str(text).strip())
-        return True
-    except Exception:
-        return False
-
-
-def iftop_live_hosts(max_age=4):
-    """Run iftop briefly and aggregate live throughput per visible LAN host.
-
-    Returns dict keyed by IP/hostname:
-    { host: {rx_bps, tx_bps, total_bps, source: 'iftop'} }
-    iftop reports bits/sec by default. We display as bytes/sec later.
-    """
-    cached = cache_get("iftop_live_hosts", max_age)
-    if isinstance(cached, dict):
-        return cached
-
-    c = cfg()
-    iface = str(c.get("iftop_iface", c.get("packet_iface", "br0")) or "br0")
-    lan_prefix = str(c.get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]))
-
-    cmd = ["iftop", "-t", "-s", "2", "-n", "-N", "-i", iface]
-    try:
-        res = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=6,
-            check=False,
-        )
-        output = res.stdout or ""
-    except Exception as e:
-        print(f"iftop lookup failed: {e}")
-        return {}
-
-    hosts = {}
-    last_left = None
-
-    import re
-    rate_re = re.compile(r"([0-9]+(?:\.[0-9]+)?[KMG]?b|[0-9]+(?:\.[0-9]+)?[KMG]?B)")
-
-    def add(host, direction, bits):
-        if not host:
-            return
-        host = str(host).strip()
-        if not host or host in ["=>", "<="]:
-            return
-        item = hosts.setdefault(host, {"rx_bps": 0.0, "tx_bps": 0.0, "total_bps": 0.0, "source": "iftop"})
-        if direction == "rx":
-            item["rx_bps"] += bits
-        else:
-            item["tx_bps"] += bits
-        item["total_bps"] = item["rx_bps"] + item["tx_bps"]
-
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line or "=>" not in line and "<=" not in line:
-            continue
-
-        parts = line.split()
-        if "=>" in parts:
-            arrow = "=>"
-        elif "<=" in parts:
-            arrow = "<="
-        else:
-            continue
-
-        idx = parts.index(arrow)
-        left = parts[0] if idx == 1 else (last_left or parts[0])
-        right = parts[idx + 1] if idx + 1 < len(parts) else ""
-        last_left = left or last_left
-
-        rates = rate_re.findall(line)
-        if not rates:
-            continue
-        bits = _parse_iftop_rate(rates[0])
-        if bits <= 0:
-            continue
-
-        left_is_lan = str(left).startswith(lan_prefix) or (not _looks_like_ip(left) and _is_lan_host(left))
-        right_is_lan = str(right).startswith(lan_prefix) or (not _looks_like_ip(right) and _is_lan_host(right))
-
-        # Pick the LAN side as the device. For LAN-to-LAN rows, count both sides conservatively.
-        if left_is_lan and not right_is_lan:
-            add(left, "tx" if arrow == "=>" else "rx", bits)
-        elif right_is_lan and not left_is_lan:
-            add(right, "rx" if arrow == "=>" else "tx", bits)
-        elif left_is_lan and right_is_lan:
-            add(left, "tx" if arrow == "=>" else "rx", bits)
-            add(right, "rx" if arrow == "=>" else "tx", bits)
-
-    cache_set("iftop_live_hosts", hosts)
-    return hosts
 
 
 def live_sample_max_age():
@@ -4079,7 +3924,7 @@ def settings():
     fields = ""
     for key in ordered_keys:
         val = c[key]
-        if key in ["app_name", "tagline", "admin_password_hash"] or key in HIDDEN_UNUSED_SETTINGS:
+        if key in ["app_name", "tagline", "admin_password_hash"]:
             continue
         typ = "password" if "pass" in key else "text"
         display_val = "" if key in SENSITIVE_CONFIG_KEYS else ", ".join(val) if isinstance(val, list) else val
