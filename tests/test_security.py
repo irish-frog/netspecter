@@ -135,6 +135,46 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("Est. Download / Total", source)
         self.assertIn("Estimated data is measured from DNS-attributed delivery traffic for this monitored app.", source)
 
+    def test_data_tables_offer_stable_sorting_without_live_rate_sorting(self):
+        self.module.init_db()
+        config = self.module.cfg()
+        config["auth_enabled"] = False
+        self.module.save_cfg(config)
+
+        pages = {
+            "/devices?sort=vendor&dir=asc": [
+                '/devices?sort=name&dir=desc',
+                '/devices?sort=last&dir=desc',
+            ],
+            "/traffic?sort=download&dir=asc": [
+                "sort=download&dir=desc",
+                "sort=total&dir=desc",
+            ],
+            "/applications?sort=app&dir=asc": [
+                "sort=app&dir=desc",
+                "sort=share&dir=desc",
+            ],
+            "/blocked-services?sort=service&dir=asc": [
+                "sort=service&dir=desc",
+                "sort=last&dir=desc",
+            ],
+            "/applications/YouTube?sort=estimated&dir=asc": [
+                "sort=estimated&dir=desc",
+                "sort=last&dir=desc",
+            ],
+        }
+        for path, expected_links in pages.items():
+            response = self.client.get(path)
+            self.assertEqual(200, response.status_code, path)
+            html = response.get_data(as_text=True)
+            for link in expected_links:
+                self.assertIn(link, html, path)
+
+        devices_html = self.client.get("/devices").get_data(as_text=True)
+        traffic_html = self.client.get("/traffic").get_data(as_text=True)
+        self.assertNotIn("sort=live", devices_html)
+        self.assertNotIn("sort=throughput", traffic_html)
+
     def test_stylesheet_url_changes_when_sidebar_watermark_css_changes(self):
         source = (SOURCE_DIR / "app.py").read_text()
         css = (SOURCE_DIR / "static" / "theme.css").read_text()

@@ -2040,7 +2040,21 @@ def devices():
 
         return redirect("/devices")
 
-    rows = query("""
+    sort = request.args.get("sort", "last")
+    direction = request.args.get("dir", "desc")
+    sort_map = {
+        "name": "COALESCE(o.name, d.name, d.ip) COLLATE NOCASE",
+        "ip": "d.ip COLLATE NOCASE",
+        "mac": "COALESCE(d.mac, '') COLLATE NOCASE",
+        "vendor": "COALESCE(o.vendor, d.vendor, 'Unknown Vendor') COLLATE NOCASE",
+        "type": "COALESCE(o.device_type, d.device_type, 'Unknown') COLLATE NOCASE",
+        "status": "COALESCE(o.status, d.status, 'Active') COLLATE NOCASE",
+        "last": "d.last_seen",
+    }
+    sort_col = sort_map.get(sort, "d.last_seen")
+    direction_sql = "ASC" if direction == "asc" else "DESC"
+
+    rows = query(f"""
         SELECT
             d.*,
             COALESCE(o.name, d.name) AS display_name,
@@ -2053,10 +2067,18 @@ def devices():
         LEFT JOIN device_overrides o
             ON o.ip = d.ip
         ORDER BY
-            CASE WHEN d.last_seen IS NULL OR d.last_seen='' THEN 1 ELSE 0 END,
-            d.last_seen DESC,
+            CASE WHEN {sort_col} IS NULL OR {sort_col}='' THEN 1 ELSE 0 END,
+            {sort_col} {direction_sql},
             d.ip
     """)
+
+    def sort_link(label, key):
+        next_dir = "desc"
+        marker = ""
+        if sort == key:
+            next_dir = "asc" if direction == "desc" else "desc"
+            marker = " v" if direction == "desc" else " ^"
+        return f'<a class="sort-link" href="/devices?sort={h(key)}&dir={next_dir}">{h(label)}{marker}</a>'
 
     type_options = [
         "Unknown", "Computer", "Mobile Device", "Apple Device", "Server",
@@ -2172,14 +2194,14 @@ def devices():
 <p class="sub">Private MAC means an iPhone or Android privacy address. To keep one stable identity, disable Private Wi-Fi Address / Randomized MAC for this trusted home network, or manually rename the current address.</p>
 <table id="deviceTable">
 <tr>
-<th>Name</th>
-<th>IP</th>
-<th>MAC</th>
-<th>Vendor</th>
-<th>Type</th>
-<th>Status</th>
+<th>{sort_link('Name', 'name')}</th>
+<th>{sort_link('IP', 'ip')}</th>
+<th>{sort_link('MAC', 'mac')}</th>
+<th>{sort_link('Vendor', 'vendor')}</th>
+<th>{sort_link('Type', 'type')}</th>
+<th>{sort_link('Status', 'status')}</th>
 <th>Live</th>
-<th>Last Seen</th>
+<th>{sort_link('Last Seen', 'last')}</th>
 <th>Action</th>
 </tr>
 {table or '<tr><td colspan="9">No devices yet</td></tr>'}
@@ -3089,8 +3111,20 @@ def clear_traffic_history():
 @app.route("/applications")
 def applications():
     start_day = range_start_day()
+    sort = request.args.get("sort", "queries")
+    direction = request.args.get("dir", "desc")
+    sort_map = {
+        "app": "category COLLATE NOCASE",
+        "activity": "total",
+        "devices": "devices",
+        "domains": "domains",
+        "queries": "total",
+        "share": "total",
+    }
+    sort_col = sort_map.get(sort, "total")
+    direction_sql = "ASC" if direction == "asc" else "DESC"
     rows = query(
-        """
+        f"""
         SELECT
             category,
             COUNT(*) AS total,
@@ -3100,11 +3134,19 @@ def applications():
         FROM dns_querylog
         WHERE day>=?
         GROUP BY category
-        ORDER BY total DESC
+        ORDER BY {sort_col} {direction_sql}, category COLLATE NOCASE ASC
         LIMIT 100
         """,
         (start_day,),
     )
+
+    def sort_link(label, key):
+        next_dir = "desc"
+        marker = ""
+        if sort == key:
+            next_dir = "asc" if direction == "desc" else "desc"
+            marker = " v" if direction == "desc" else " ^"
+        return f'<a class="sort-link" href="/applications?range={range_key()}&sort={h(key)}&dir={next_dir}">{h(label)}{marker}</a>'
 
     max_count = max([int(r["total"] or 1) for r in rows], default=1)
     total_queries = sum([int(r["total"] or 0) for r in rows])
@@ -3168,12 +3210,12 @@ def applications():
 </div>
 <div class="panel apps-panel">
   <div class="apps-header">
-    <span>App</span>
-    <span>Activity</span>
-    <span>Devices</span>
-    <span>Domains</span>
-    <span>Queries</span>
-    <span>Share</span>
+    <span>{sort_link('App', 'app')}</span>
+    <span>{sort_link('Activity', 'activity')}</span>
+    <span>{sort_link('Devices', 'devices')}</span>
+    <span>{sort_link('Domains', 'domains')}</span>
+    <span>{sort_link('Queries', 'queries')}</span>
+    <span>{sort_link('Share', 'share')}</span>
   </div>
   <div class="apps-list">
     {app_rows}
@@ -3242,6 +3284,7 @@ def application_detail(category):
         "client": "l.client",
         "domains": "domains",
         "queries": "total",
+        "estimated": "estimated_total_mb",
         "last": "last_seen",
     }
     sort_col = sort_map.get(sort, "total")
@@ -3257,19 +3300,27 @@ def application_detail(category):
             COALESCE(d.ip, l.client) AS device_ip,
             COUNT(*) AS total,
             COUNT(DISTINCT l.domain) AS domains,
-            MAX(l.ts) AS last_seen
+            MAX(l.ts) AS last_seen,
+            COALESCE(MAX(m.downloaded_mb), 0) AS estimated_downloaded_mb,
+            COALESCE(MAX(m.total_mb), 0) AS estimated_total_mb
         FROM dns_querylog l
         LEFT JOIN devices d
             ON d.ip = l.client
             OR LOWER(d.mac) = LOWER(l.client)
         LEFT JOIN device_overrides o
             ON o.ip = COALESCE(d.ip, l.client)
+        LEFT JOIN (
+            SELECT ip, SUM(downloaded_mb) AS downloaded_mb, SUM(total_mb) AS total_mb
+            FROM estimated_app_traffic
+            WHERE day>=? AND category=?
+            GROUP BY ip
+        ) m ON m.ip = COALESCE(d.ip, l.client)
         WHERE l.day>=? AND l.category=?
         GROUP BY l.client
         ORDER BY {sort_col} {direction_sql}
         LIMIT 200
         """,
-        (start_day, category),
+        (start_day, category, start_day, category),
     )
 
     domain_rows = query(
@@ -3299,7 +3350,6 @@ def application_detail(category):
         """,
         (start_day, category),
     ) if monitoring_enabled else []
-    measured_by_ip = {str(r["ip"]): r for r in measured_rows}
     estimated_down = sum(float(r["downloaded_mb"] or 0) for r in measured_rows)
     estimated_up = sum(float(r["uploaded_mb"] or 0) for r in measured_rows)
     estimated_total = sum(float(r["total_mb"] or 0) for r in measured_rows)
@@ -3313,7 +3363,6 @@ def application_detail(category):
         if monitoring_enabled
         else ""
     )
-    estimated_header = "<th>Est. Download / Total</th>" if monitoring_enabled else ""
     empty_colspan = 7 if monitoring_enabled else 6
 
     def sort_link(label, key):
@@ -3325,16 +3374,17 @@ def application_detail(category):
         href = f"/applications/{quote(category, safe='')}?range={range_key()}&sort={h(key)}&dir={next_dir}"
         return f'<a class="sort-link" href="{href}">{h(label)}{marker}</a>'
 
+    estimated_header = f"<th>{sort_link('Est. Download / Total', 'estimated')}</th>" if monitoring_enabled else ""
+
     devices_table = ""
     for r in device_rows:
         device_ip = str(r["device_ip"] or r["client"] or "")
-        measured = measured_by_ip.get(device_ip)
         total = int(r["total"] or 0)
         width = max(5, min(total / max_device_queries * 100, 100))
         href = f"/device/{h(device_ip)}" if valid_lan_ip(device_ip) else "#"
         estimated_cell = (
-            f"<td>{fmt_mb(measured['downloaded_mb']) if measured else '0.00 MB'} / "
-            f"<b>{fmt_mb(measured['total_mb']) if measured else '0.00 MB'}</b></td>"
+            f"<td>{fmt_mb(r['estimated_downloaded_mb'])} / "
+            f"<b>{fmt_mb(r['estimated_total_mb'])}</b></td>"
             if monitoring_enabled
             else ""
         )
@@ -3449,8 +3499,20 @@ def blocked():
 @app.route("/blocked-services")
 def blocked_services():
     start_day = range_start_day()
+    sort = request.args.get("sort", "blocked")
+    direction = request.args.get("dir", "desc")
+    sort_map = {
+        "service": "category COLLATE NOCASE",
+        "activity": "total",
+        "devices": "devices",
+        "domains": "domains",
+        "blocked": "total",
+        "last": "last_seen",
+    }
+    sort_col = sort_map.get(sort, "total")
+    direction_sql = "ASC" if direction == "asc" else "DESC"
     rows = query(
-        """
+        f"""
         SELECT
             category,
             COUNT(*) AS total,
@@ -3460,11 +3522,19 @@ def blocked_services():
         FROM dns_querylog
         WHERE day>=? AND blocked=1
         GROUP BY category
-        ORDER BY total DESC
+        ORDER BY {sort_col} {direction_sql}, category COLLATE NOCASE ASC
         LIMIT 100
         """,
         (start_day,),
     )
+
+    def sort_link(label, key):
+        next_dir = "desc"
+        marker = ""
+        if sort == key:
+            next_dir = "asc" if direction == "desc" else "desc"
+            marker = " v" if direction == "desc" else " ^"
+        return f'<a class="sort-link" href="/blocked-services?range={range_key()}&sort={h(key)}&dir={next_dir}">{h(label)}{marker}</a>'
 
     max_count = max([int(r["total"] or 1) for r in rows], default=1)
     table = ""
@@ -3488,7 +3558,7 @@ def blocked_services():
 {time_picker()}
 <div class="panel">
 <table>
-<tr><th>Service</th><th>Activity</th><th>Devices</th><th>Domains</th><th>Blocked</th><th>Last Seen</th></tr>
+<tr><th>{sort_link('Service', 'service')}</th><th>{sort_link('Activity', 'activity')}</th><th>{sort_link('Devices', 'devices')}</th><th>{sort_link('Domains', 'domains')}</th><th>{sort_link('Blocked', 'blocked')}</th><th>{sort_link('Last Seen', 'last')}</th></tr>
 {table or '<tr><td colspan="6">No blocked services recorded.</td></tr>'}
 </table>
 </div>
