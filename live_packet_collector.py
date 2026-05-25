@@ -12,6 +12,7 @@ What this file does:
 - Ignores the gateway/router so it does not appear as the top user.
 - Imports AdGuard Home DNS querylog into dns_querylog.
 - Classifies domains into application categories for Top Applications.
+- Estimates bytes for selected apps from device-specific delivery DNS answers.
 
 Important:
 - Speeds in live_device_speed are stored as BYTES per second.
@@ -19,10 +20,12 @@ Important:
 - dns_querylog powers Top Applications and per-device application views.
 """
 
+import atexit
 import fcntl
 import ipaddress
 import json
 import os
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -63,6 +66,7 @@ DATA_DIR = configured_path("NETSPECTER_DATA_ROOT", "/var/lib/netspecter", BASE_D
 CONFIG_PATH = CONFIG_DIR / "config.json"
 DB_PATH = DATA_DIR / "netspecter.db"
 OUI_PATH = DATA_DIR / "oui_cache.json"
+SYSTEM_OUI_PATH = Path("/usr/share/ieee-data/oui.txt")
 SECRET_KEY_PATH = CONFIG_DIR / "secret.key"
 COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 ENCRYPTED_PREFIX = "enc:"
@@ -114,7 +118,30 @@ NFT_TABLE = "netspecter"
 NFT_CHAIN = "forward"
 nft_config_signature = None
 nft_previous_counters = {}
+nft_previous_estimated_counters = {}
 nft_active_ips = set()
+estimated_app_targets = {}
+estimated_targets_lock = threading.Lock()
+oui_vendor_cache = None
+GEOLOCATION_URL = "https://ipwho.is/"
+GEOLOCATION_REFRESH_SECONDS = 3600
+MONITORED_APP_DOMAIN_KEYS = {
+    "YouTube": ("googlevideo.com",),
+    "Netflix": ("nflxvideo.net", "netflix.com"),
+    "TikTok": ("tiktokcdn.com", "tiktokv.com", "byteoversea.com"),
+    "Facebook": ("fbcdn.net", "facebook.com"),
+    "Instagram": ("cdninstagram.com", "instagram.com"),
+    "WhatsApp": ("whatsapp.net", "whatsapp.com"),
+    "Microsoft": ("teams.microsoft.com", "officecdn.microsoft.com", "windowsupdate.com"),
+    "Spotify": ("spotify.com", "scdn.co", "spotifycdn.com"),
+    "Steam": ("steamserver.net", "steamcontent.com", "steampowered.com"),
+    "Twitter / X": ("twitter.com", "twimg.com", "x.com"),
+    "Snapchat": ("snapchat.com", "sc-cdn.net"),
+    "Discord": ("discord.com", "discordapp.com", "discordcdn.com"),
+    "Twitch": ("twitch.tv", "ttvnw.net"),
+    "Disney+": ("disneyplus.com", "dssott.com", "bamgrid.com"),
+    "Prime Video": ("primevideo.com", "aiv-cdn.net"),
+}
 
 
 def acquire_collector_lock():
@@ -221,11 +248,44 @@ def positive_int(value, default, minimum=1):
         return max(minimum, int(default))
 
 
+def private_mac_address(mac):
+    """Return True for locally administered MACs used by mobile privacy features."""
+    text = str(mac or "").strip().replace(":", "").replace("-", "")
+    try:
+        return len(text) >= 2 and bool(int(text[:2], 16) & 0x02)
+    except ValueError:
+        return False
+
+
+def load_oui_vendors():
+    """Load shipped overrides plus Debian's IEEE OUI list once per collector process."""
+    global oui_vendor_cache
+    if oui_vendor_cache is not None:
+        return oui_vendor_cache
+
+    vendors = load_json(OUI_PATH, {})
+    try:
+        for line in SYSTEM_OUI_PATH.read_text(errors="ignore").splitlines():
+            if "(hex)" not in line:
+                continue
+            prefix, vendor = line.split("(hex)", 1)
+            key = prefix.strip().replace("-", "").upper()
+            if len(key) == 6 and vendor.strip():
+                vendors.setdefault(key, vendor.strip())
+    except Exception:
+        pass
+    oui_vendor_cache = vendors
+    return vendors
+
+
 def vendor_from_mac(mac):
-    """Look up vendor name from MAC address."""
-    oui = load_json(OUI_PATH, {})
-    key = str(mac or "").upper().replace(":", "").replace("-", "")[:6]
-    return oui.get(key, "Unknown Vendor")
+    """Look up a hardware vendor, without guessing from randomized mobile MACs."""
+    if not str(mac or "").strip():
+        return "Unknown Vendor"
+    if private_mac_address(mac):
+        return "Private / Random MAC"
+    key = str(mac).upper().replace(":", "").replace("-", "")[:6]
+    return load_oui_vendors().get(key, "Unknown Vendor")
 
 
 def classify_device(vendor=""):
@@ -281,6 +341,8 @@ def app_from_domain(domain):
     d = str(domain or "").lower().strip(".")
     if not d:
         return "Other"
+    if d == "x.com" or d.endswith(".x.com"):
+        return "Twitter / X"
 
     mapping = {
         "YouTube": ["youtube", "googlevideo", "ytimg"],
@@ -293,6 +355,12 @@ def app_from_domain(domain):
         "Facebook": ["facebook", "fbcdn", "messenger"],
         "Instagram": ["instagram", "cdninstagram"],
         "WhatsApp": ["whatsapp"],
+        "Twitter / X": ["twitter", "twimg"],
+        "Snapchat": ["snapchat", "sc-cdn"],
+        "Discord": ["discord", "discordapp", "discordcdn"],
+        "Twitch": ["twitch", "ttvnw"],
+        "Disney+": ["disneyplus", "dssott", "bamgrid"],
+        "Prime Video": ["primevideo", "aiv-cdn"],
         "Microsoft": ["microsoft", "office", "office365", "teams", "trouter", "msftconnecttest", "windowsupdate"],
         "Apple": ["apple", "icloud", "aaplimg"],
         "Google": ["google", "gstatic", "googleapis", "androidtvchannels"],
@@ -477,6 +545,52 @@ def init_db():
 
     con.execute(
         """
+        CREATE TABLE IF NOT EXISTS estimated_app_traffic (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            category TEXT NOT NULL,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS remote_traffic_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            remote_ip TEXT NOT NULL,
+            category TEXT NOT NULL,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS remote_ip_locations (
+            remote_ip TEXT PRIMARY KEY,
+            city TEXT,
+            region TEXT,
+            country TEXT,
+            country_code TEXT,
+            latitude REAL,
+            longitude REAL,
+            lookup_ts TEXT
+        )
+        """
+    )
+
+    con.execute(
+        """
         CREATE TABLE IF NOT EXISTS dns_querylog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             day TEXT,
@@ -502,6 +616,8 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_ip_ts ON traffic_samples(ip, ts)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_estimated_app_day_ip ON estimated_app_traffic(day, category, ip)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_remote_traffic_day_ip ON remote_traffic_intervals(day, remote_ip, category)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_category ON dns_querylog(category)")
@@ -569,6 +685,14 @@ def prune_history(config=None):
             (traffic_cutoff,),
         )
         con.execute(
+            "DELETE FROM estimated_app_traffic WHERE day < date('now', 'localtime', ?)",
+            (traffic_cutoff,),
+        )
+        con.execute(
+            "DELETE FROM remote_traffic_intervals WHERE day < date('now', 'localtime', ?)",
+            (traffic_cutoff,),
+        )
+        con.execute(
             "DELETE FROM dns_querylog WHERE day < date('now', 'localtime', ?)",
             (dns_cutoff,),
         )
@@ -593,20 +717,144 @@ def lan_network(config=None):
     return network
 
 
+def monitored_app_for_domain(domain):
+    """Return an app only when its DNS domain is specific enough for attribution."""
+    normalized_domain = str(domain or "").lower().strip(".")
+    for category, keys in MONITORED_APP_DOMAIN_KEYS.items():
+        if any(normalized_domain == key or normalized_domain.endswith(f".{key}") for key in keys):
+            return category
+    return ""
+
+
+def remember_estimated_app_targets(config, client, domain, answers, observed_at="", blocked=False):
+    """Remember client/destination pairs for explicitly monitored app categories."""
+    if blocked:
+        return
+    category = monitored_app_for_domain(domain)
+    if not category:
+        return
+    try:
+        client_ip = ipaddress.ip_address(str(client or "").strip())
+        network = lan_network(config)
+        if client_ip.version != 4 or client_ip not in network:
+            return
+    except ValueError:
+        return
+
+    now = time.time()
+    try:
+        observed_epoch = datetime.strptime(str(observed_at)[:19], "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        observed_epoch = now
+    for answer in answers if isinstance(answers, list) else []:
+        if not isinstance(answer, dict) or str(answer.get("type") or "").upper() != "A":
+            continue
+        try:
+            destination = ipaddress.ip_address(str(answer.get("value") or "").strip())
+        except ValueError:
+            continue
+        if destination.version != 4 or destination.is_unspecified or destination in network:
+            continue
+        ttl = positive_int(answer.get("ttl", 900), 900, 1)
+        expires = observed_epoch + min(max(ttl, 900), 21600)
+        if expires <= now:
+            continue
+        key = (str(client_ip), str(destination))
+        with estimated_targets_lock:
+            existing = estimated_app_targets.get(key)
+            if not existing or existing[0] == category or existing[1] <= now:
+                estimated_app_targets[key] = (category, max(existing[1] if existing and existing[0] == category else 0, expires))
+
+
+def active_estimated_app_targets():
+    """Return unexpired monitored app client/destination pairs for nftables attribution."""
+    now = time.time()
+    with estimated_targets_lock:
+        expired = [key for key, (_category, expires) in estimated_app_targets.items() if expires <= now]
+        for key in expired:
+            estimated_app_targets.pop(key, None)
+        return tuple(sorted((category, client, destination) for (client, destination), (category, _expires) in estimated_app_targets.items()))
+
+
+def update_one_remote_location():
+    """Refresh at most one used destination location per DNS import cycle."""
+    cutoff = datetime.fromtimestamp(time.time() - GEOLOCATION_REFRESH_SECONDS).strftime("%Y-%m-%d %H:%M:%S")
+    con = connect_db()
+    row = con.execute(
+        """
+        SELECT r.remote_ip
+        FROM remote_traffic_intervals r
+        LEFT JOIN remote_ip_locations l ON l.remote_ip = r.remote_ip
+        GROUP BY r.remote_ip
+        HAVING MAX(l.lookup_ts) IS NULL OR MAX(l.lookup_ts) < ?
+        ORDER BY MAX(r.ts) DESC
+        LIMIT 1
+        """,
+        (cutoff,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return
+
+    remote_ip = str(row[0])
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    location = {}
+    try:
+        response = requests.get(
+            f"{GEOLOCATION_URL}{remote_ip}",
+            params={"fields": "success,city,region,country,country_code,latitude,longitude"},
+            timeout=5,
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if isinstance(payload, dict) and payload.get("success"):
+                location = payload
+    except Exception as e:
+        print(f"Remote destination location lookup failed for {remote_ip}: {e}")
+
+    run_sql(
+        """
+        INSERT INTO remote_ip_locations
+            (remote_ip, city, region, country, country_code, latitude, longitude, lookup_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(remote_ip) DO UPDATE SET
+            city=excluded.city,
+            region=excluded.region,
+            country=excluded.country,
+            country_code=excluded.country_code,
+            latitude=excluded.latitude,
+            longitude=excluded.longitude,
+            lookup_ts=excluded.lookup_ts
+        """,
+        (
+            remote_ip,
+            str(location.get("city") or ""),
+            str(location.get("region") or ""),
+            str(location.get("country") or ""),
+            str(location.get("country_code") or ""),
+            location.get("latitude"),
+            location.get("longitude"),
+            now,
+        ),
+    )
+
+
 def nft_signature(config=None):
     c = config or cfg()
     return (
         str(c.get("packet_iface") or "br0"),
         str(lan_network(c)),
         tuple(sorted(ignored_ips(c))),
+        active_estimated_app_targets(),
     )
 
 
 def install_nft_counters(config=None):
     """Create an isolated bridge counter table; no traffic is blocked or redirected."""
-    global nft_config_signature, nft_previous_counters, nft_active_ips
+    global nft_config_signature, nft_previous_counters, nft_previous_estimated_counters, nft_active_ips
     c = config or cfg()
-    interface, network_text, ignored = nft_signature(c)
+    signature = nft_signature(c)
+    interface, network_text, ignored, app_targets = signature
     network = ipaddress.ip_network(network_text)
     ignored_set = set(ignored)
     hosts = [str(ip) for ip in network.hosts() if str(ip) not in ignored_set]
@@ -630,6 +878,13 @@ def install_nft_counters(config=None):
         lines.append(
             f'    ip daddr {ip} ip saddr != {network} counter comment "netspecter:rx:{ip}"'
         )
+    for category, client, destination in app_targets:
+        lines.append(
+            f'    ip saddr {client} ip daddr {destination} counter comment "netspecter:estimated:{category}:tx:{client}:{destination}"'
+        )
+        lines.append(
+            f'    ip daddr {client} ip saddr {destination} counter comment "netspecter:estimated:{category}:rx:{client}:{destination}"'
+        )
     lines.extend(["  }", "}"])
     result = subprocess.run(
         ["nft", "-f", "-"],
@@ -642,14 +897,42 @@ def install_nft_counters(config=None):
     if result.returncode != 0:
         raise RuntimeError(f"nftables counter setup failed: {result.stderr.strip()}")
 
-    nft_config_signature = (interface, network_text, ignored)
+    nft_config_signature = signature
     nft_previous_counters = {}
+    nft_previous_estimated_counters = {}
     nft_active_ips = set()
-    print(f"nftables traffic counters installed for {network_text} on bridge traffic ({interface})")
+    print(
+        f"nftables traffic counters installed for {network_text} on bridge traffic ({interface}); "
+        f"{len(app_targets)} monitored app attribution target(s)"
+    )
+
+
+def remove_nft_counters():
+    """Remove NetSpecter's private counter table during an orderly shutdown."""
+    global nft_config_signature, nft_previous_counters, nft_previous_estimated_counters, nft_active_ips
+    if nft_config_signature is None:
+        return
+    subprocess.run(
+        ["nft", "delete", "table", NFT_FAMILY, NFT_TABLE],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    nft_config_signature = None
+    nft_previous_counters = {}
+    nft_previous_estimated_counters = {}
+    nft_active_ips = set()
+    print("NetSpecter nftables traffic counters removed")
+
+
+def shutdown_collector(signum, _frame):
+    print(f"Collector shutting down after signal {signum}")
+    remove_nft_counters()
+    raise SystemExit(0)
 
 
 def read_nft_counters():
-    """Return {(direction, ip): bytes} from the NetSpecter nftables table."""
+    """Return device totals and DNS-attributed app totals from nftables."""
     result = subprocess.run(
         ["nft", "-j", "list", "chain", NFT_FAMILY, NFT_TABLE, NFT_CHAIN],
         text=True,
@@ -662,6 +945,7 @@ def read_nft_counters():
 
     payload = json.loads(result.stdout)
     counters = {}
+    estimated_counters = {}
     for item in payload.get("nftables", []):
         rule = item.get("rule") if isinstance(item, dict) else None
         if not rule:
@@ -669,16 +953,17 @@ def read_nft_counters():
         comment = str(rule.get("comment") or "")
         if not comment.startswith("netspecter:"):
             continue
-        parts = comment.split(":", 2)
-        if len(parts) != 3 or parts[1] not in ("rx", "tx"):
-            continue
         total_bytes = 0
         for expr in rule.get("expr", []):
             if isinstance(expr, dict) and isinstance(expr.get("counter"), dict):
                 total_bytes = int(expr["counter"].get("bytes", 0) or 0)
                 break
-        counters[(parts[1], parts[2])] = total_bytes
-    return counters
+        parts = comment.split(":")
+        if len(parts) == 3 and parts[1] in ("rx", "tx"):
+            counters[(parts[1], parts[2])] = total_bytes
+        elif len(parts) == 6 and parts[1] == "estimated" and parts[3] in ("rx", "tx"):
+            estimated_counters[(parts[2], parts[3], parts[4], parts[5])] = total_bytes
+    return counters, estimated_counters
 
 
 def read_arp_macs():
@@ -705,7 +990,7 @@ def flush_loop():
     - Updates devices
     - Inserts additive traffic_intervals rows
     """
-    global nft_config_signature, nft_previous_counters, nft_active_ips
+    global nft_config_signature, nft_previous_counters, nft_previous_estimated_counters, nft_active_ips
     init_db()
     last_flush_at = time.monotonic()
     last_prune_day = ""
@@ -718,7 +1003,7 @@ def flush_loop():
             if signature != nft_config_signature:
                 install_nft_counters(c)
 
-            current_counters = read_nft_counters()
+            current_counters, current_estimated_counters = read_nft_counters()
             flush_at = time.monotonic()
             elapsed = max(flush_at - last_flush_at, 0.001)
             last_flush_at = flush_at
@@ -735,6 +1020,18 @@ def flush_loop():
                 if delta or ip in nft_active_ips:
                     deltas.setdefault(ip, {"rx": 0, "tx": 0})
                     deltas[ip][direction] = delta
+            estimated_deltas = {}
+            remote_destination_deltas = {}
+            for (category, direction, ip, destination), total_bytes in current_estimated_counters.items():
+                key = (category, direction, ip, destination)
+                previous = nft_previous_estimated_counters.get(key, 0)
+                delta = max(total_bytes - previous, 0)
+                nft_previous_estimated_counters[key] = total_bytes
+                if delta:
+                    estimated_deltas.setdefault((category, ip), {"rx": 0, "tx": 0})
+                    estimated_deltas[(category, ip)][direction] += delta
+                    remote_destination_deltas.setdefault((category, ip, destination), {"rx": 0, "tx": 0})
+                    remote_destination_deltas[(category, ip, destination)][direction] += delta
             write_heartbeat("OK", "nftables counters running")
         except Exception as e:
             print(f"nftables traffic collection failed: {e}")
@@ -813,6 +1110,34 @@ def flush_loop():
                     ),
                 )
 
+        for (category, ip), cur in estimated_deltas.items():
+            interval_rx_mb = cur["rx"] / 1024 / 1024
+            interval_tx_mb = cur["tx"] / 1024 / 1024
+            interval_total_mb = interval_rx_mb + interval_tx_mb
+            if interval_total_mb > 0:
+                run_sql(
+                    """
+                    INSERT INTO estimated_app_traffic
+                        (ip, category, downloaded_mb, uploaded_mb, total_mb, day, ts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (ip, category, interval_rx_mb, interval_tx_mb, interval_total_mb, day, now),
+                )
+
+        for (category, ip, destination), cur in remote_destination_deltas.items():
+            interval_rx_mb = cur["rx"] / 1024 / 1024
+            interval_tx_mb = cur["tx"] / 1024 / 1024
+            interval_total_mb = interval_rx_mb + interval_tx_mb
+            if interval_total_mb > 0:
+                run_sql(
+                    """
+                    INSERT INTO remote_traffic_intervals
+                        (ip, remote_ip, category, downloaded_mb, uploaded_mb, total_mb, day, ts)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (ip, destination, category, interval_rx_mb, interval_tx_mb, interval_total_mb, day, now),
+                )
+
         if day != last_prune_day:
             prune_history(c)
             last_prune_day = day
@@ -887,6 +1212,8 @@ def import_adguard_querylog():
         if not domain or not client:
             continue
 
+        remember_estimated_app_targets(c, client, domain, item.get("answer") or [], ts, blocked)
+
         if cutoff and ts <= cutoff:
             continue
 
@@ -924,6 +1251,7 @@ def adguard_querylog_loop():
 
         try:
             import_adguard_querylog()
+            update_one_remote_location()
         except Exception as e:
             print(f"AdGuard querylog loop failed: {e}")
 
@@ -933,6 +1261,10 @@ def adguard_querylog_loop():
 if __name__ == "__main__":
     if not acquire_collector_lock():
         raise SystemExit(1)
+
+    atexit.register(remove_nft_counters)
+    signal.signal(signal.SIGTERM, shutdown_collector)
+    signal.signal(signal.SIGINT, shutdown_collector)
 
     while True:
         try:

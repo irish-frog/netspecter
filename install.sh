@@ -19,10 +19,9 @@ port_3000_in_use() {
   ss -H -ltn 'sport = :3000' 2>/dev/null | grep -q LISTEN
 }
 
-echo "[1/9] Updating system and installing setup tools..."
+echo "[1/9] Refreshing package metadata and installing setup tools..."
 apt update
-apt upgrade -y
-apt install -y wget gnupg ca-certificates lsb-release iproute2
+apt install -y wget curl gnupg ca-certificates lsb-release iproute2
 
 echo "[2/9] Installing AdGuard Home first if requested..."
 if [ "$INSTALL_ADGUARD" = "1" ] && ! command -v AdGuardHome >/dev/null 2>&1 && [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
@@ -46,7 +45,11 @@ if [ "$ADGUARD_JUST_INSTALLED" = "1" ] && port_3000_in_use; then
 fi
 
 echo "[3/9] Installing NetSpecter base packages..."
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git iftop bmon vnstat
+if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok installed"; then
+  curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
+fi
+apt remove -y speedtest-cli >/dev/null 2>&1 || true
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git iftop bmon vnstat ieee-data speedtest
 
 echo "[4/9] Creating folders..."
 mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$DATA_DIR"
@@ -57,6 +60,8 @@ echo "[5/9] Copying NetSpecter files..."
 systemctl stop netspecter-collector >/dev/null 2>&1 || true
 pkill -f 'live_packet_collector.py' >/dev/null 2>&1 || true
 cp app.py "$INSTALL_DIR/app.py"
+cp gunicorn_config.py "$INSTALL_DIR/gunicorn_config.py"
+cp wsgi.py "$INSTALL_DIR/wsgi.py"
 cp live_packet_collector.py "$INSTALL_DIR/live_packet_collector.py"
 cp collector_watchdog.sh "$INSTALL_DIR/collector_watchdog.sh"
 cp -r static/. "$INSTALL_DIR/static/"
@@ -78,6 +83,8 @@ python3 -m venv "$INSTALL_DIR/venv"
 echo "[7/9] Preparing database and permissions..."
 touch "$DATA_DIR/netspecter.db"
 chown -R root:root "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"
+chmod 700 "$CONFIG_DIR" "$CONFIG_DIR/adguard" "$DATA_DIR"
+chmod 600 "$CONFIG_DIR/config.json" "$DATA_DIR/netspecter.db" "$DATA_DIR/cache.json" "$DATA_DIR/oui_cache.json"
 chmod +x "$INSTALL_DIR/live_packet_collector.py"
 chmod +x "$INSTALL_DIR/collector_watchdog.sh"
 chmod +x "$INSTALL_DIR/scripts/render-adguard-template.sh"

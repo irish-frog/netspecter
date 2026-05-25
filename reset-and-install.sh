@@ -20,4 +20,4 @@ rm -rf /root/netlifyx /root/netspecter /opt/netspecter
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-./install.sh
+bash ./install.sh

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/netspecter
-ExecStart=/opt/netspecter/venv/bin/python /opt/netspecter/app.py
+ExecStart=/opt/netspecter/venv/bin/gunicorn --config /opt/netspecter/gunicorn_config.py wsgi:application
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1

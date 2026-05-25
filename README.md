@@ -8,7 +8,7 @@
   Real-time Network Visibility and DNS Analytics Platform
 </p>
 
-\---
+---
 
 ## Overview
 
@@ -24,7 +24,7 @@ It combines:
 * Login-protected dashboard
 * CSV exports and service health checks
 
-\---
+---
 
 ## Recommended Layout
 
@@ -42,7 +42,7 @@ Client Devices
 
 Bridge mode is recommended for best traffic visibility. DNS analytics require clients to use AdGuard Home as DNS.
 
-\---
+---
 
 ## Before Installation: Network Interfaces And Bridge
 
@@ -90,7 +90,7 @@ enp5s0    switch-facing port
 then use those exact names in the bridge configuration:
 
 ```ini
-    bridge\_ports enp4s0 enp5s0
+    bridge_ports enp4s0 enp5s0
 
 iface enp4s0 inet manual
 iface enp5s0 inet manual
@@ -119,10 +119,10 @@ iface br0 inet static
     address 192.168.1.10/24
     gateway 192.168.1.1
     dns-nameservers 192.168.1.1
-    bridge\_ports enp1s0 enp2s0
-    bridge\_stp off
-    bridge\_fd 0
-    bridge\_maxwait 0
+    bridge_ports enp1s0 enp2s0
+    bridge_stp off
+    bridge_fd 0
+    bridge_maxwait 0
 
 iface enp1s0 inet manual
 iface enp2s0 inet manual
@@ -132,7 +132,7 @@ Replace the IPs and physical interface names for your network:
 
 * Replace `enp1s0` with your router-facing NIC name.
 * Replace `enp2s0` with your switch-facing NIC name.
-* Replace those names in both `bridge\_ports` and the `iface ... inet manual` lines.
+* Replace those names in both `bridge_ports` and the `iface ... inet manual` lines.
 * Leave the appliance IP address on `br0` only; do not give either physical bridge port its own IP address.
 
 ### Keep Bridge Ports Active On Reboot
@@ -141,7 +141,7 @@ The bridge configuration above is sufficient for the two NICs inside the bridge:
 
 ```ini
 auto br0
-    bridge\_ports enp1s0 enp2s0
+    bridge_ports enp1s0 enp2s0
 ```
 
 When Debian brings up `br0` during boot, it also brings `enp1s0` and `enp2s0` into the bridge. On a working NetSpecter system, verification should show:
@@ -188,7 +188,7 @@ Expected results:
 * The default route points to your gateway through `br0`.
 * LAN devices continue to access the router through the appliance.
 
-\---
+---
 
 ## Supported OS
 
@@ -198,19 +198,18 @@ Recommended:
 
 Run the installer as `root`.
 
-\---
+---
 
 ## Quick Install
 
 ```bash
-apt update \&\& apt install git -y
+apt update && apt install git -y
 
 cd /root
 git clone https://github.com/irish-frog/netspecter.git
 cd netspecter
 
-chmod +x install.sh
-./install.sh
+bash ./install.sh
 ```
 
 The installer:
@@ -222,7 +221,7 @@ The installer:
 * Stores runtime data in `/var/lib/netspecter`
 * Installs systemd services and watchdog timer
 
-\---
+---
 
 ## First Run
 
@@ -259,6 +258,10 @@ Configure:
 
 Service passwords are encrypted in `/etc/netspecter/config.json` after saving Settings.
 
+### Destination Map Privacy Note
+
+The Network Map plots approximate destinations for monitored application delivery traffic only. To locate remote endpoints, the collector sends a remote destination IP address, never a LAN client IP address, to `https://ipwho.is/`. Location results are cached locally and refreshed no more than once per hour per destination.
+
 ### Point Your Router DNS To NetSpecter
 
 For AdGuard and NetSpecter DNS analytics to work, devices on your LAN must use the NetSpecter appliance as their DNS server.
@@ -282,9 +285,8 @@ nslookup google.com YOUR-NETSPECTER-IP
 
 Requests should then appear in the AdGuard Query Log and in NetSpecter DNS/application views.
 
-\---
+---
 
 ## Project Status
 
 Alpha / active development.
-

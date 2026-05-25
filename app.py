@@ -51,7 +51,7 @@ def configured_path(env_name, default_path, local_path):
 INSTALL_ROOT = configured_path("NETSPECTER_INSTALL_ROOT", "/opt/netspecter", BASE_DIR)
 CONFIG_ROOT = configured_path("NETSPECTER_CONFIG_ROOT", "/etc/netspecter", BASE_DIR)
 DATA_ROOT = configured_path("NETSPECTER_DATA_ROOT", "/var/lib/netspecter", BASE_DIR)
-ROOT = configured_path("NETSPECTER_APP_ROOT", "/root/netspecter", BASE_DIR)
+ROOT = Path(os.environ.get("NETSPECTER_APP_ROOT", str(INSTALL_ROOT)))
 CONFIG_PATH = CONFIG_ROOT / "config.json"
 DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
@@ -76,7 +76,7 @@ DEFAULT_CONFIG = {
     "admin_user": "admin",
     "admin_password_hash": "",
     "lan_prefix": "192.168.1.",
-    "collect_interval_seconds": 30,
+    "collect_interval_seconds": 2,
     "traffic_retention_days": 30,
     "dns_retention_days": 14,
     "public_ip_cache_seconds": 1800,
@@ -115,11 +115,34 @@ APP_ICONS = {
     "Facebook": '<i class="fa-brands fa-facebook app-fb"></i>',
     "Instagram": '<i class="fa-brands fa-instagram app-ig"></i>',
     "TikTok": '<i class="fa-brands fa-tiktok app-tiktok"></i>',
+    "Twitter / X": '<i class="fa-brands fa-x-twitter app-other"></i>',
+    "Snapchat": '<i class="fa-brands fa-snapchat app-other"></i>',
+    "Discord": '<i class="fa-brands fa-discord app-other"></i>',
+    "Twitch": '<i class="fa-brands fa-twitch app-other"></i>',
+    "Disney+": '<i class="fa-solid fa-film app-other"></i>',
+    "Prime Video": '<i class="fa-solid fa-circle-play app-other"></i>',
     "Gaming": '<i class="fa-solid fa-gamepad app-game"></i>',
     "Apple": '<i class="fa-brands fa-apple app-apple"></i>',
     "Cloud": '<i class="fa-solid fa-cloud app-cloud"></i>',
     "Security": '<i class="fa-solid fa-shield-halved app-sec"></i>',
     "Other": '<i class="fa-solid fa-globe app-other"></i>',
+}
+MONITORED_APP_CATEGORIES = {
+    "YouTube",
+    "Netflix",
+    "TikTok",
+    "Facebook",
+    "Instagram",
+    "WhatsApp",
+    "Microsoft",
+    "Spotify",
+    "Steam",
+    "Twitter / X",
+    "Snapchat",
+    "Discord",
+    "Twitch",
+    "Disney+",
+    "Prime Video",
 }
 
 DEVICE_ICONS = {
@@ -200,6 +223,10 @@ def decrypt_config_value(value):
 
 
 app.secret_key = get_or_create_session_secret()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
 
 
 def cfg():
@@ -305,9 +332,10 @@ def time_picker():
     options = [("1d", "Today"), ("7d", "7 Days"), ("30d", "30 Days")]
     current = range_key()
     links = ""
+    path = h(request.path)
     for key, label in options:
         cls = "active" if key == current else ""
-        links += f'<a class="{cls}" href="{request.path}?range={key}">{label}</a>'
+        links += f'<a class="{cls}" href="{path}?range={key}">{label}</a>'
     return f'<div class="time-picker">{links}</div>'
 
 
@@ -318,6 +346,18 @@ def auth_required():
 
 def admin_password_set():
     return bool(cfg().get("admin_password_hash"))
+
+
+def csrf_token():
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+def csrf_input():
+    return f'<input type="hidden" name="_csrf_token" value="{h(csrf_token())}">'
 
 
 def setup_missing_items(config=None):
@@ -366,7 +406,7 @@ def login_template(title, body):
 <title>{h(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/theme.css?v=20260525g">
 </head>
 <body class="login-body">
   <div class="login-card">
@@ -375,6 +415,16 @@ def login_template(title, body):
   </div>
 </body>
 </html>"""
+
+
+@app.before_request
+def require_csrf_token():
+    if request.method == "POST":
+        expected = session.get("_csrf_token", "")
+        submitted = request.form.get("_csrf_token", "")
+        if not expected or not secrets.compare_digest(str(expected), str(submitted)):
+            return Response("Invalid CSRF token.", status=400, mimetype="text/plain")
+    return None
 
 
 @app.before_request
@@ -394,6 +444,23 @@ def require_login():
         return None
 
     return redirect("/login")
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com; "
+        "font-src 'self' data: https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; "
+        "base-uri 'self'; frame-ancestors 'none'",
+    )
+    return response
 
 
 @app.route("/setup-admin", methods=["GET", "POST"])
@@ -426,6 +493,7 @@ def setup_admin():
 <p>Set the first NetSpecter administrator password.</p>
 {f'<div class="login-error">{h(error)}</div>' if error else ''}
 <form method="post">
+  {csrf_input()}
   <label>Username</label>
   <input name="username" value="admin">
   <label>Password</label>
@@ -460,6 +528,7 @@ def login():
 <p>Enter your NetSpecter admin credentials.</p>
 {f'<div class="login-error">{h(error)}</div>' if error else ''}
 <form method="post">
+  {csrf_input()}
   <label>Username</label>
   <input name="username" value="{h(cfg().get('admin_user', 'admin'))}">
   <label>Password</label>
@@ -583,6 +652,45 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
     con.execute("""
+        CREATE TABLE IF NOT EXISTS estimated_app_traffic (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            category TEXT NOT NULL,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_estimated_app_day_ip ON estimated_app_traffic(day, category, ip)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS remote_traffic_intervals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            remote_ip TEXT NOT NULL,
+            category TEXT NOT NULL,
+            downloaded_mb REAL DEFAULT 0,
+            uploaded_mb REAL DEFAULT 0,
+            total_mb REAL DEFAULT 0,
+            day TEXT,
+            ts TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_remote_traffic_day_ip ON remote_traffic_intervals(day, remote_ip, category)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS remote_ip_locations (
+            remote_ip TEXT PRIMARY KEY,
+            city TEXT,
+            region TEXT,
+            country TEXT,
+            country_code TEXT,
+            latitude REAL,
+            longitude REAL,
+            lookup_ts TEXT
+        )
+    """)
+    con.execute("""
         CREATE TABLE IF NOT EXISTS dns_querylog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             day TEXT,
@@ -656,7 +764,16 @@ def ensure_device_overrides_table():
 
 def has_real_vendor(vendor):
     text = str(vendor or "").strip().lower()
-    return bool(text and text not in ["unknown", "unknown vendor", "n/a", "none", "-"])
+    return bool(text and text not in ["unknown", "unknown vendor", "private / random mac", "n/a", "none", "-"])
+
+
+def private_mac_address(mac):
+    """Detect locally administered addresses used by Private Wi-Fi/Randomized MAC."""
+    text = str(mac or "").strip().replace(":", "").replace("-", "")
+    try:
+        return len(text) >= 2 and bool(int(text[:2], 16) & 0x02)
+    except ValueError:
+        return False
 
 
 def auto_lock_known_vendors():
@@ -938,9 +1055,9 @@ def iftop_live_hosts(max_age=4):
 def live_sample_max_age():
     """Keep a collector sample live until the next configured write can arrive."""
     try:
-        interval = max(1, int(cfg().get("collect_interval_seconds", 30) or 30))
+        interval = max(1, int(cfg().get("collect_interval_seconds", 2) or 2))
     except Exception:
-        interval = 30
+        interval = 2
     return max(20, interval * 2 + 5)
 
 
@@ -1105,7 +1222,7 @@ def latest_hosts(limit=100):
         LEFT JOIN device_overrides o
             ON o.ip = t.ip
         WHERE 1=1 {ignore_clause}
-        ORDER BY total_mb DESC
+        ORDER BY u.total_mb DESC
         LIMIT ?
         """,
         tuple(params),
@@ -1176,7 +1293,7 @@ def totals():
         LEFT JOIN devices d ON d.ip=u.ip
         LEFT JOIN device_overrides o ON o.ip=u.ip
         WHERE 1=1 {ignore_clause.replace("t.ip", "u.ip")}
-        ORDER BY total_mb DESC
+        ORDER BY u.total_mb DESC
         LIMIT 500
         """,
         tuple(params),
@@ -1350,6 +1467,29 @@ def top_categories(limit=8):
     )
 
 
+def estimated_app_usage(limit=10):
+    """Return DNS-attributed measured bytes, kept separate from total device usage."""
+    return query(
+        """
+        SELECT
+            e.category,
+            e.ip,
+            COALESCE(NULLIF(o.name, ''), NULLIF(d.name, ''), e.ip) AS name,
+            SUM(e.downloaded_mb) AS downloaded_mb,
+            SUM(e.uploaded_mb) AS uploaded_mb,
+            SUM(e.total_mb) AS total_mb
+        FROM estimated_app_traffic e
+        LEFT JOIN devices d ON d.ip=e.ip
+        LEFT JOIN device_overrides o ON o.ip=e.ip
+        WHERE e.day>=?
+        GROUP BY e.category, e.ip, name
+        ORDER BY total_mb DESC
+        LIMIT ?
+        """,
+        (range_start_day(), limit),
+    )
+
+
 def ag_auth():
     c = cfg()
     return (c.get("adguard_user"), c.get("adguard_pass"))
@@ -1460,7 +1600,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/theme.css?v=20260525g">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -1473,9 +1613,9 @@ def shell(title, body, active="Dashboard"):
      =================================================== -->
 
 <div class="sidebar">
+  <div class="designer-credit">Designed by Gavin Reniers</div>
   <img src="/static/netspecter-logo-sidebar.png" class="brand-logo">
   <div class="nav">{nav}</div>
-  <div class="designer-credit">Designed by Gavin Reniers</div>
 </div>
 
 <!-- ===================================================
@@ -1580,6 +1720,8 @@ function saveDeviceRow(button) {{
   row.querySelectorAll(".edit-field").forEach(el => {{
     addField(el.dataset.field, el.value);
   }});
+
+  addField("_csrf_token", "{h(csrf_token())}");
 
   document.body.appendChild(form);
   form.submit();
@@ -1876,6 +2018,11 @@ def dashboard():
 .dash-two {{ display:grid; grid-template-columns:1.35fr .9fr; gap:16px; }}
 .dash-panel {{ background:#142136; border:1px solid rgba(148,163,184,.16); border-radius:12px; padding:20px; box-shadow:0 16px 42px rgba(0,0,0,.28); }}
 .dash-panel h2 {{ margin:0 0 18px; font-size:20px; }}
+.dash-panel h2 small {{ display:block; color:#9aa7bb; font-size:12px; margin-top:6px; font-weight:700; }}
+.dash-actions {{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }}
+.speed-test-form {{ display:flex; align-items:center; gap:10px; }}
+.speed-test-form button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:9px 14px; cursor:pointer; font-weight:800; }}
+.speed-test-form small {{ color:#9aa7bb; font-weight:700; }}
 .dash-app-row {{ display:grid; grid-template-columns:150px 1fr 54px 54px; align-items:center; gap:12px; margin:12px 0; padding:8px 10px; border-radius:8px; background:#0d172a; }}
 .dash-app-name {{ display:flex; align-items:center; gap:12px; }}
 .dash-app-name i {{ font-size:23px; width:26px; text-align:center; }}
@@ -1897,7 +2044,14 @@ def dashboard():
 </style>
 
 <div class="dash-wrap">
-  {time_picker()}
+  <div class="dash-actions">
+    {time_picker()}
+    <form method="post" action="/speed-test" class="speed-test-form">
+      {csrf_input()}
+      <small>Uses internet data once</small>
+      <button type="submit"><i class="fa-solid fa-gauge-high"></i> Run Speed Test</button>
+    </form>
+  </div>
   <div class="dash-summary">
     <div id="dashboardBlockRing" class="dash-ring" title="DNS blocked share: {blocked_pct}%" style="background:conic-gradient(#ff526c 0 {blocked_pct}%, #00ddc7 {blocked_pct}% 100%);"></div>
     <a class="dash-card" href="/blocked"><div class="label">Total Blocked</div><span id="dashboardBlocked" class="big red">{blocked:,}</span><small>Blocked domains: <span id="dashboardBlockedDomains">{blocked_domains:,}</span></small></a>
@@ -1989,8 +2143,8 @@ async function loadDashboardTraffic() {{
 }}
 loadDashboardSummary();
 loadDashboardTraffic();
-setInterval(loadDashboardSummary, 30000);
-setInterval(loadDashboardTraffic, 30000);
+setInterval(loadDashboardSummary, 5000);
+setInterval(loadDashboardTraffic, 5000);
 </script>
 """
 
@@ -2063,7 +2217,7 @@ def devices():
         "Unknown", "Computer", "Mobile Device", "Apple Device", "Server",
         "Network Device", "Printer", "Camera", "Media Device", "IoT", "Gateway"
     ]
-    status_options = ["Active", "Known", "Watch", "Blocked", "OK"]
+    status_options = ["Active", "Known", "Watch", "DNS Blocked", "Blocked", "OK"]
 
     table = ""
 
@@ -2078,6 +2232,7 @@ def devices():
         device_icon = icon_for_device(r["display_type"] or "Unknown")
         lifecycle_badges = device_lifecycle_badges(r["first_seen"], r["last_seen"])
         lock_badge = '<span class="badge-lock">Locked</span>' if r["manual_locked"] else ''
+        private_badge = '<span class="badge-private">Private MAC</span>' if private_mac_address(r["mac"]) else ''
 
         type_select = '<select class="edit-field" data-field="device_type" style="display:none; max-width:150px;">'
         for opt in type_options:
@@ -2099,7 +2254,7 @@ def devices():
         table += f"""
 <tr data-ip="{ip}">
   <td>
-    <span class="view-val"><span class="device-type-icon">{device_icon}</span><b>{name}</b> {lock_badge} {lifecycle_badges}</span>
+    <span class="view-val"><span class="device-type-icon">{device_icon}</span><b>{name}</b> {lock_badge} {private_badge} {lifecycle_badges}</span>
     <input class="edit-field" data-field="name" value="{name}" style="display:none; max-width:170px;">
   </td>
   <td class="mono">{ip}</td>
@@ -2143,6 +2298,7 @@ def devices():
   border:1px solid rgba(255,255,255,.12);
 }}
 .badge-lock {{ background:rgba(0, 220, 200, 0.16); color:#28e0d5; }}
+.badge-private {{ display:inline-block; margin-left:8px; padding:2px 7px; border-radius:999px; font-size:11px; border:1px solid rgba(248,200,78,.28); background:rgba(248,200,78,.12); color:#f8c84e; }}
 .badge-new {{ background:rgba(0, 170, 255, 0.16); color:#58c7ff; }}
 .badge-online {{ background:rgba(54, 239, 126, 0.14); color:#36ef7e; }}
 .badge-offline {{ background:rgba(255, 56, 96, 0.14); color:#ff6b85; }}
@@ -2168,6 +2324,7 @@ def devices():
 <input class="searchbar" id="deviceSearch" placeholder="Search device, IP, MAC, vendor, type, status..." onkeyup="filterDevices()">
 <div class="panel">
 <p class="sub">Manual edits are locked and will override collector updates.</p>
+<p class="sub">Private MAC means an iPhone or Android privacy address. To keep one stable identity, disable Private Wi-Fi Address / Randomized MAC for this trusted home network, or manually rename the current address.</p>
 <table id="deviceTable">
 <tr>
 <th>Name</th>
@@ -2263,17 +2420,17 @@ def adguard_set_disallowed(ip, blocked=True):
     return ok, resp
 
 
-@app.route("/device/pause/<ip>")
+@app.route("/device/pause/<ip>", methods=["POST"])
 def pause_device(ip):
     if not valid_lan_ip(ip):
         return shell("Invalid IP", f"{topbar('Invalid IP')}<div class='panel'>Invalid IP address.</div>", "Devices")
 
     ok, resp = adguard_set_disallowed(ip, True)
-    set_manual_status(ip, "Paused" if ok else "Pause Failed")
+    set_manual_status(ip, "DNS Blocked" if ok else "DNS Block Failed")
     return redirect(f"/device/{ip}")
 
 
-@app.route("/device/resume/<ip>")
+@app.route("/device/resume/<ip>", methods=["POST"])
 def resume_device(ip):
     if not valid_lan_ip(ip):
         return shell("Invalid IP", f"{topbar('Invalid IP')}<div class='panel'>Invalid IP address.</div>", "Devices")
@@ -2468,6 +2625,7 @@ def device(ip):
     dtype = r["display_type"] or "Unknown"
     status = r["display_status"] or "Active"
     manual_locked = bool(r["manual_locked"])
+    private_mac = private_mac_address(r["mac"])
 
     # Per-device DNS activity must be an exact client match.
     # Do NOT use LIKE here: a gateway IP could also match longer client IPs.
@@ -2576,6 +2734,8 @@ def device(ip):
 .identity-line span:first-child {{ color:#93a7ba; }}
 .device-tools {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; margin-top:16px; }}
 .tool-btn {{ text-align:center; padding:12px 10px; border-radius:10px; font-weight:700; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04); color:#dff7ff; }}
+.tool-action {{ display:flex; margin:0; }}
+.tool-action .tool-btn {{ width:100%; margin:0; }}
 .tool-btn.blue {{ color:#22b8ff; border-color:rgba(0,150,255,.35); }}
 .tool-btn.green {{ color:#38f07b; border-color:rgba(50,240,120,.35); }}
 .tool-btn.yellow {{ color:#ffca3a; border-color:rgba(255,202,58,.35); }}
@@ -2587,6 +2747,7 @@ def device(ip):
 .device-scroll {{ max-height:440px; overflow:auto; }}
 .pill-open {{ display:inline-block; padding:3px 9px; border-radius:999px; border:1px solid rgba(62,240,120,.5); color:#52ef86; font-weight:700; }}
 .badge-lock {{ display:inline-block; padding:3px 8px; border-radius:999px; background:rgba(0,220,200,.16); color:#28e0d5; font-size:12px; font-weight:700; }}
+.badge-private {{ display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid rgba(248,200,78,.28); background:rgba(248,200,78,.12); color:#f8c84e; font-size:12px; font-weight:700; }}
 .mini-link {{ margin-left:8px; color:#28d7ff; font-weight:700; }}
 @media (max-width: 1100px) {{ .device-hero, .device-grid-main, .device-grid-bottom {{ grid-template-columns:1fr; }} .device-tools {{ grid-template-columns:1fr; }} }}
 </style>
@@ -2611,21 +2772,22 @@ def device(ip):
     <div class="identity-card">
       <div class="device-avatar">{icon_for_device(dtype)}</div>
       <div>
-        <div class="identity-title">{h(device_name)} {'<span class="badge-lock">Locked</span>' if manual_locked else ''}</div>
+        <div class="identity-title">{h(device_name)} {'<span class="badge-lock">Locked</span>' if manual_locked else ''} {'<span class="badge-private">Private MAC</span>' if private_mac else ''}</div>
         <div class="identity-line"><span>IP Address</span><b>{h(ip)}</b></div>
         <div class="identity-line"><span>MAC Address</span><b>{h(r['mac'])}</b></div>
         <div class="identity-line"><span>Vendor</span><b>{h(vendor)}</b></div>
         <div class="identity-line"><span>Type</span><b>{h(dtype)}</b></div>
         <div class="identity-line"><span>Status</span><b>{h(status)}</b></div>
         <div class="identity-line"><span>Manual Lock</span><b>{'Yes' if manual_locked else 'No'}</b></div>
+        {f'<div class="identity-line"><span>Identity</span><b>Randomized by device privacy setting; disable it for this home Wi-Fi to keep tracking stable.</b></div>' if private_mac else ''}
       </div>
     </div>
 
     <div class="device-tools">
       <a class="tool-btn blue" href="/ping/{h(ip)}"><i class="fa-solid fa-satellite-dish"></i> Ping</a>
       <a class="tool-btn blue" href="/scan/{h(ip)}"><i class="fa-solid fa-magnifying-glass"></i> Port Scan</a>
-      <a class="tool-btn yellow" href="/device/pause/{h(ip)}"><i class="fa-solid fa-pause"></i> Pause Internet</a>
-      <a class="tool-btn green" href="/device/resume/{h(ip)}"><i class="fa-solid fa-play"></i> Resume Internet</a>
+      <form class="tool-action" method="post" action="/device/pause/{h(ip)}">{csrf_input()}<button class="tool-btn yellow" type="submit"><i class="fa-solid fa-ban"></i> Block DNS</button></form>
+      <form class="tool-action" method="post" action="/device/resume/{h(ip)}">{csrf_input()}<button class="tool-btn green" type="submit"><i class="fa-solid fa-check"></i> Allow DNS</button></form>
       <a class="tool-btn red" href="/device/block/{h(ip)}"><i class="fa-solid fa-ban"></i> Block Device</a>
       <a class="tool-btn blue" href="/devices"><i class="fa-solid fa-pen-to-square"></i> Edit Device</a>
       {open_web_button}
@@ -3039,6 +3201,8 @@ def clear_traffic_history():
             con = connect_db()
             con.execute("DELETE FROM traffic_intervals")
             con.execute("DELETE FROM traffic_samples")
+            con.execute("DELETE FROM estimated_app_traffic")
+            con.execute("DELETE FROM remote_traffic_intervals")
             con.execute("DELETE FROM live_device_speed")
             con.commit()
             con.close()
@@ -3068,6 +3232,7 @@ def clear_traffic_history():
   <p>This will permanently delete <strong>{sample_count:,} measured traffic intervals</strong> and reset the live traffic totals to zero.</p>
   <p>Your DNS history, settings, login and edited device names will not be changed.</p>
   <form method="post" class="clear-actions">
+    {csrf_input()}
     <button class="btn-red" type="submit">Yes, Clear Traffic History</button>
     <a href="/traffic?range={range_key()}">Cancel</a>
   </form>
@@ -3107,6 +3272,7 @@ def applications():
     app_rows = ""
     for r in rows:
         category = str(r["category"] or "Other")
+        monitor_badge = '<small class="monitor-badge">Data monitored</small>' if category in MONITORED_APP_CATEGORIES else ""
         total = int(r["total"] or 0)
         devices = int(r["devices"] or 0)
         domains = int(r["domains"] or 0)
@@ -3116,7 +3282,7 @@ def applications():
         app_rows += f"""
 <a class="app-row app-link" href="{href}">
   <span class="app-icon">{icon_for_app(category)}</span>
-  <span class="app-name">{h(category)}</span>
+  <span class="app-name">{h(category)}{monitor_badge}</span>
   <div class="bar"><div style="width:{width}%"></div></div>
   <span class="app-meta">{devices} devices</span>
   <span class="app-meta">{domains} domains</span>
@@ -3147,6 +3313,7 @@ def applications():
 .apps-clear-btn:hover {{ background:rgba(255,77,94,.24); color:#fff; }}
 .apps-cleared {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(0,214,183,.3); background:rgba(0,214,183,.10); color:#7df5df; font-weight:700; }}
 .apps-clear-error {{ margin:0 0 14px 8px; padding:11px 14px; border-radius:10px; border:1px solid rgba(255,77,94,.38); background:rgba(255,77,94,.12); color:#ffdbe0; font-weight:700; }}
+.monitor-badge {{ display:block; width:max-content; margin-top:4px; color:#00ddc7; font-size:10px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }}
 </style>
 {clear_notice}
 <div class="apps-summary">
@@ -3208,6 +3375,7 @@ def clear_application_history():
   <p>This will permanently delete <strong>{query_count:,} stored DNS/application activity records</strong> and clear Top Applications.</p>
   <p>Your traffic history, settings, login and edited device names will not be changed.</p>
   <form method="post" class="clear-actions">
+    {csrf_input()}
     <button class="btn-red" type="submit">Yes, Clear App History</button>
     <a href="/applications?range={range_key()}">Cancel</a>
   </form>
@@ -3219,6 +3387,7 @@ def clear_application_history():
 @app.route("/applications/<path:category>")
 def application_detail(category):
     category = unquote(category or "Other")
+    monitoring_enabled = category in MONITORED_APP_CATEGORIES
     start_day = range_start_day()
     sort = request.args.get("sort", "queries")
     direction = request.args.get("dir", "desc")
@@ -3272,6 +3441,35 @@ def application_detail(category):
 
     total_queries = sum(int(r["total"] or 0) for r in device_rows)
     max_device_queries = max([int(r["total"] or 1) for r in device_rows], default=1)
+    measured_rows = query(
+        """
+        SELECT
+            ip,
+            SUM(downloaded_mb) AS downloaded_mb,
+            SUM(uploaded_mb) AS uploaded_mb,
+            SUM(total_mb) AS total_mb
+        FROM estimated_app_traffic
+        WHERE day>=? AND category=?
+        GROUP BY ip
+        """,
+        (start_day, category),
+    ) if monitoring_enabled else []
+    measured_by_ip = {str(r["ip"]): r for r in measured_rows}
+    estimated_down = sum(float(r["downloaded_mb"] or 0) for r in measured_rows)
+    estimated_up = sum(float(r["uploaded_mb"] or 0) for r in measured_rows)
+    estimated_total = sum(float(r["total_mb"] or 0) for r in measured_rows)
+    estimated_cards = f"""
+  <div class="mini-card"><span>Estimated Download</span><b>{fmt_mb(estimated_down)}</b></div>
+  <div class="mini-card"><span>Estimated Upload</span><b>{fmt_mb(estimated_up)}</b></div>
+  <div class="mini-card"><span>Estimated Data</span><b>{fmt_mb(estimated_total)}</b></div>
+""" if monitoring_enabled else ""
+    estimated_note = (
+        "<p>Estimated data is measured from DNS-attributed delivery traffic for this monitored app.</p>"
+        if monitoring_enabled
+        else ""
+    )
+    estimated_header = "<th>Est. Download / Total</th>" if monitoring_enabled else ""
+    empty_colspan = 7 if monitoring_enabled else 6
 
     def sort_link(label, key):
         next_dir = "desc"
@@ -3285,9 +3483,16 @@ def application_detail(category):
     devices_table = ""
     for r in device_rows:
         device_ip = str(r["device_ip"] or r["client"] or "")
+        measured = measured_by_ip.get(device_ip)
         total = int(r["total"] or 0)
         width = max(5, min(total / max_device_queries * 100, 100))
         href = f"/device/{h(device_ip)}" if valid_lan_ip(device_ip) else "#"
+        estimated_cell = (
+            f"<td>{fmt_mb(measured['downloaded_mb']) if measured else '0.00 MB'} / "
+            f"<b>{fmt_mb(measured['total_mb']) if measured else '0.00 MB'}</b></td>"
+            if monitoring_enabled
+            else ""
+        )
         devices_table += f"""
 <tr onclick="location.href='{href}'">
   <td>{icon_for_device(r['device_type'])} <b>{h(r['device_name'])}</b><br><span>{h(r['vendor'])}</span></td>
@@ -3295,6 +3500,7 @@ def application_detail(category):
   <td>{int(r['domains'] or 0):,}</td>
   <td><div class="bar table-bar"><div style="width:{width}%"></div></div></td>
   <td><b>{total:,}</b></td>
+  {estimated_cell}
   <td>{h(r['last_seen'])}</td>
 </tr>
 """
@@ -3325,10 +3531,12 @@ def application_detail(category):
   <div class="mini-card"><span>DNS Hits</span><b>{total_queries:,}</b></div>
   <div class="mini-card"><span>Devices</span><b>{len(device_rows):,}</b></div>
   <div class="mini-card"><span>Domains</span><b>{len(domain_rows):,}</b></div>
+  {estimated_cards}
 </div>
 <div class="layout">
   <div class="panel">
     <h2>Devices Using {h(category)}</h2>
+    {estimated_note}
     <table>
       <tr>
         <th>{sort_link('Device', 'device')}</th>
@@ -3336,9 +3544,10 @@ def application_detail(category):
         <th>{sort_link('Domains', 'domains')}</th>
         <th>Activity</th>
         <th>{sort_link('DNS Hits', 'queries')}</th>
+        {estimated_header}
         <th>{sort_link('Last Seen', 'last')}</th>
       </tr>
-      {devices_table or '<tr><td colspan="6">No devices recorded for this app today.</td></tr>'}
+      {devices_table or f'<tr><td colspan="{empty_colspan}">No devices recorded for this app today.</td></tr>'}
     </table>
   </div>
   <div class="panel">
@@ -3445,44 +3654,108 @@ def blocked_services():
 @app.route("/map")
 def network_map():
     c = cfg()
-    hosts = latest_hosts(200)
-    active_hosts = [x for x in hosts if device_age_seconds(x["last_seen"]) < 300]
-    stale_hosts = [x for x in hosts if device_age_seconds(x["last_seen"]) >= 300]
-
-    def device_card(r):
-        name = h(r["name"] or r["ip"])
-        ip = h(r["ip"])
-        dtype = classify_device(name, r["vendor"], r["mac"])
-        return f"""
-<a class="map-device" href="/device/{ip}">
-  <span>{icon_for_device(dtype)}</span>
-  <b>{name}</b>
-  <small>{ip}</small>
-</a>
-"""
-
-    active_cards = "".join(device_card(r) for r in active_hosts[:60])
-    stale_cards = "".join(device_card(r) for r in stale_hosts[:60])
+    rows = query(
+        """
+        SELECT r.remote_ip, r.category, l.city, l.region, l.country, l.latitude, l.longitude,
+               SUM(r.downloaded_mb) AS downloaded_mb,
+               SUM(r.uploaded_mb) AS uploaded_mb,
+               SUM(r.total_mb) AS total_mb,
+               COUNT(DISTINCT r.ip) AS devices
+        FROM remote_traffic_intervals r
+        JOIN remote_ip_locations l ON l.remote_ip = r.remote_ip
+        WHERE r.day >= ? AND l.latitude IS NOT NULL AND l.longitude IS NOT NULL
+        GROUP BY r.remote_ip, r.category, l.city, l.region, l.country, l.latitude, l.longitude
+        ORDER BY SUM(r.total_mb) DESC
+        LIMIT 250
+        """,
+        (range_start_day(),),
+    )
+    points = [
+        {
+            "ip": h(r["remote_ip"]),
+            "category": h(r["category"]),
+            "location": h(", ".join(x for x in (r["city"], r["region"], r["country"]) if x)),
+            "latitude": float(r["latitude"]),
+            "longitude": float(r["longitude"]),
+            "downloaded": float(r["downloaded_mb"] or 0),
+            "uploaded": float(r["uploaded_mb"] or 0),
+            "total": float(r["total_mb"] or 0),
+            "devices": int(r["devices"] or 0),
+        }
+        for r in rows
+    ]
+    points_json = json.dumps(points).replace("</", "<\\/")
+    destination_rows = "".join(
+        f"""
+<tr>
+  <td>{h(r['category'])}<br><span>{h(r['remote_ip'])}</span></td>
+  <td>{h(', '.join(x for x in (r['city'], r['region'], r['country']) if x))}</td>
+  <td>{int(r['devices'] or 0)}</td>
+  <td>{fmt_mb(r['downloaded_mb'])}</td>
+  <td>{fmt_mb(r['uploaded_mb'])}</td>
+  <td><b>{fmt_mb(r['total_mb'])}</b></td>
+</tr>"""
+        for r in rows[:12]
+    )
 
     body = f"""
 {topbar('Network Map')}
-<div class="map-flow">
+<div class="map-flow compact-topology">
   <div class="map-node"><i class="fa-solid fa-globe"></i><b>Internet</b><span>WAN</span></div>
   <div class="map-line"></div>
   <div class="map-node"><i class="fa-solid fa-shield-halved"></i><b>NetSpecter Bridge</b><span>{h(c.get('packet_iface', 'br0'))}</span></div>
   <div class="map-line"></div>
   <div class="map-node"><i class="fa-solid fa-network-wired"></i><b>LAN</b><span>{h(c.get('lan_prefix'))}0/24</span></div>
 </div>
-<div class="layout">
-  <div class="panel">
-    <h2>Active Devices</h2>
-    <div class="map-grid">{active_cards or '<p>No active devices yet.</p>'}</div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<div class="panel destination-map-panel">
+  <div class="destination-map-heading">
+    <div>
+      <h2>Monitored App Destinations</h2>
+      <p>Approximate destination locations for monitored app traffic only. Locations are cached and refreshed at most hourly.</p>
+    </div>
+    <div class="map-legend"><span class="download-dot"></span> Download heavy <span class="upload-dot"></span> Upload heavy</div>
   </div>
-  <div class="panel">
-    <h2>Recently Seen / Stale</h2>
-    <div class="map-grid">{stale_cards or '<p>No stale devices.</p>'}</div>
-  </div>
+  <div id="destinationMap"></div>
+  <p class="map-empty" id="mapEmpty" style="display:none">Pins appear after monitored app delivery traffic is measured and its remote IP location is cached.</p>
 </div>
+<div class="panel">
+  <h2>Top Mapped Destinations</h2>
+  <table>
+    <tr><th>Application / IP</th><th>Approximate Location</th><th>Devices</th><th>Download</th><th>Upload</th><th>Total</th></tr>
+    {destination_rows or '<tr><td colspan="6">No mapped monitored-app traffic yet.</td></tr>'}
+  </table>
+</div>
+<script>
+const destinationPoints = {points_json};
+const destinationMap = L.map("destinationMap", {{worldCopyJump: true, minZoom: 2}}).setView([15, 10], 2);
+L.tileLayer("https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
+  maxZoom: 18,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}}).addTo(destinationMap);
+const markerBounds = [];
+destinationPoints.forEach((point) => {{
+  const downloadHeavy = point.downloaded >= point.uploaded;
+  const color = downloadHeavy ? "#5ba8ff" : "#20df9f";
+  const radius = Math.min(28, 6 + Math.sqrt(Math.max(point.total, 0)) * 1.7);
+  L.circleMarker([point.latitude, point.longitude], {{
+    radius: radius, color: color, weight: 2, fillColor: color, fillOpacity: 0.56
+  }}).addTo(destinationMap).bindPopup(
+    "<b>" + point.category + "</b><br>" + point.location + "<br>" + point.ip +
+    "<br>Download: " + point.downloaded.toFixed(2) + " MB" +
+    "<br>Upload: " + point.uploaded.toFixed(2) + " MB" +
+    "<br>Total: " + point.total.toFixed(2) + " MB" +
+    "<br>Devices: " + point.devices
+  );
+  markerBounds.push([point.latitude, point.longitude]);
+}});
+if (markerBounds.length) {{
+  destinationMap.fitBounds(markerBounds, {{padding: [28, 28], maxZoom: 6}});
+}} else {{
+  document.getElementById("mapEmpty").style.display = "block";
+}}
+</script>
 """
     return shell("Network Map", body, "Map")
 
@@ -3640,21 +3913,32 @@ def ag_enabled(endpoint):
 def toggle_card(label, enabled, on_action, off_action, icon, color="green"):
     if enabled is None:
         txt = "Unknown"
-        href = "#"
+        action = ""
         cls = "yellow"
     elif enabled:
         txt = "ON"
-        href = f"/adguard/action?action={off_action}"
+        action = off_action
         cls = color
     else:
         txt = "OFF"
-        href = f"/adguard/action?action={on_action}"
+        action = on_action
         cls = "red"
-    return f"""
-<a class="card" href="{href}">
+    if not action:
+        return f"""
+<div class="card">
   <div class="label">{icon} {label}</div>
   <span class="big {cls}">{txt}</span>
-</a>
+</div>
+"""
+    return f"""
+<form class="card" method="post" action="/adguard/action">
+  {csrf_input()}
+  <input type="hidden" name="action" value="{h(action)}">
+  <button type="submit" style="background:none; border:0; padding:0; margin:0; width:100%; min-height:82px; text-align:left; color:inherit;">
+    <div class="label">{icon} {label}</div>
+    <span class="big {cls}">{txt}</span>
+  </button>
+</form>
 """
 
 @app.route("/adguard")
@@ -3686,6 +3970,7 @@ def adguard():
 <div class="panel">
 <h2>Quick Controls</h2>
 <form method="post" action="/adguard/action">
+  {csrf_input()}
   <button name="action" value="cache_clear">Clear Cache</button>
   <button name="action" value="filter_refresh">Refresh Filters</button>
 </form>
@@ -3694,9 +3979,9 @@ def adguard():
     return shell("AdGuard", body, "AdGuard")
 
 
-@app.route("/adguard/action", methods=["GET", "POST"])
+@app.route("/adguard/action", methods=["POST"])
 def adguard_action():
-    action = request.values.get("action", "")
+    action = request.form.get("action", "")
 
     mapping = {
         "protection_on": ("/protection", {"enabled": True, "duration": 0}),
@@ -3815,6 +4100,7 @@ def settings():
 <div class="panel settings">
 {setup_banner()}
 <form method="post">
+{csrf_input()}
 {fields}
 <button>Save Settings</button>
 </form>
@@ -3822,6 +4108,45 @@ def settings():
 </div>
 """
     return shell("Settings", body, "Settings")
+
+
+@app.route("/speed-test", methods=["POST"])
+def speed_test():
+    """Run an administrator-triggered speed test; never consumes bandwidth automatically."""
+    try:
+        speedtest_env = os.environ.copy()
+        speedtest_env.setdefault("HOME", "/root")
+        speedtest_env.setdefault("LANG", "C.UTF-8")
+        speedtest_env.setdefault("LC_ALL", "C.UTF-8")
+        result = subprocess.run(
+            ["/usr/bin/speedtest", "--accept-license", "--accept-gdpr"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+            check=False,
+            env=speedtest_env,
+        )
+        output = (result.stdout or "").strip() or "Speed test returned no output."
+        if result.returncode != 0:
+            output = f"Speed test failed (exit {result.returncode}).\n{output}"
+    except FileNotFoundError:
+        output = "The official Ookla speedtest client is not installed. Re-run the NetSpecter installer to install it."
+    except subprocess.TimeoutExpired:
+        output = "Speed test timed out after 120 seconds."
+    except Exception as error:
+        output = f"Speed test could not run: {error}"
+
+    body = f"""
+{topbar('Speed Test')}
+<div class="panel">
+  <h2>Internet Speed Test</h2>
+  <p>This test runs only when requested and transfers data over your internet connection.</p>
+  <pre>{h(output)}</pre>
+  <p><a href="/">Back to Dashboard</a></p>
+</div>
+"""
+    return shell("Speed Test", body, "Dashboard")
 
 
 @app.route("/system")
