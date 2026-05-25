@@ -42,6 +42,8 @@ Client Devices
 
 Bridge mode is recommended for best traffic visibility. DNS analytics require clients to use AdGuard Home as DNS.
 
+Need to know why the appliance is bridged? See the [FAQ: Why Does NetSpecter Need To Be Bridged?](FAQ.md).
+
 ---
 
 ## Before Installation: Network Interfaces And Bridge
@@ -197,6 +199,14 @@ Recommended:
 * Debian 12 Bookworm
 
 Run the installer as `root`.
+
+---
+
+## FAQ
+
+* [Why does NetSpecter need to be bridged?](FAQ.md#why-does-netspecter-need-to-be-bridged)
+* [Can it run as DNS-only without a bridge?](FAQ.md#can-i-run-netspecter-without-a-bridge)
+* [Does bridge mode slow the internet connection?](FAQ.md#does-bridge-mode-slow-my-internet-connection)
 
 ---
 
