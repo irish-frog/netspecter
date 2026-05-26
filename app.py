@@ -76,18 +76,6 @@ DEFAULT_CONFIG = {
     "admin_user": "admin",
     "admin_password_hash": "",
     "lan_prefix": "192.168.1.",
-    "vlan1_name": "",
-    "vlan1_subnet": "",
-    "vlan1_gateway_ip": "",
-    "vlan2_name": "",
-    "vlan2_subnet": "",
-    "vlan2_gateway_ip": "",
-    "vlan3_name": "",
-    "vlan3_subnet": "",
-    "vlan3_gateway_ip": "",
-    "vlan4_name": "",
-    "vlan4_subnet": "",
-    "vlan4_gateway_ip": "",
     "collect_interval_seconds": 2,
     "traffic_retention_days": 30,
     "dns_retention_days": 14,
@@ -296,55 +284,12 @@ def default_gateway_from_prefix(prefix):
     return ""
 
 
-def _ipv4_network(value):
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.endswith("."):
-        text = f"{text}0/24"
-    elif "/" not in text:
-        text = f"{text}/24"
-    try:
-        network = ipaddress.ip_network(text, strict=False)
-        return network if network.version == 4 else None
-    except ValueError:
-        return None
-
-
-def monitored_networks(config=None):
-    c = config or cfg()
-    networks = []
-    primary = _ipv4_network(c.get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]))
-    if primary:
-        gateway = str(c.get("gateway_ip", "") or "").strip() or str(next(primary.hosts(), ""))
-        networks.append({"name": "Flat LAN", "subnet": str(primary), "network": primary, "gateway": gateway})
-    for number in range(1, 5):
-        network = _ipv4_network(c.get(f"vlan{number}_subnet", ""))
-        if not network:
-            continue
-        name = str(c.get(f"vlan{number}_name", "") or "").strip() or f"VLAN {number}"
-        gateway = str(c.get(f"vlan{number}_gateway_ip", "") or "").strip() or str(next(network.hosts(), ""))
-        networks.append({"name": name, "subnet": str(network), "network": network, "gateway": gateway})
-    return networks
-
-
-def network_name_for_ip(value, config=None):
-    try:
-        address = ipaddress.ip_address(str(value or "").strip())
-    except ValueError:
-        return "Unknown"
-    for item in monitored_networks(config):
-        if address in item["network"]:
-            return item["name"]
-    return "External"
-
-
 def ignored_ips(config=None):
     c = config or cfg()
     ips = cfg_list(c.get("ignore_ips", []))
-    for item in monitored_networks(c):
-        if item["gateway"] and item["gateway"] not in ips:
-            ips.insert(0, item["gateway"])
+    gateway = str(c.get("gateway_ip", "") or "").strip() or default_gateway_from_prefix(c.get("lan_prefix"))
+    if gateway and gateway not in ips:
+        ips.insert(0, gateway)
     return ips
 
 
@@ -1698,7 +1643,6 @@ refreshLiveSpeeds();
 def topbar(title="Dashboard"):
     c = cfg()
     adguard_url = str(c.get("adguard_url", "") or "#")
-    network_summary = " | ".join(f"{item['name']}: {item['subnet']}" for item in monitored_networks(c))
 
     return f"""
 <div class="topbar">
@@ -1711,7 +1655,7 @@ def topbar(title="Dashboard"):
     <span>Public IP: {public_ip()}</span>
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
-    <span>{h(network_summary)}</span>
+    <span>LAN: {c.get('lan_prefix')}0/24</span>
   </div>
 </div>
 """
@@ -2172,7 +2116,6 @@ def devices():
 
     for r in rows:
         ip = h(r["ip"])
-        network_name = h(network_name_for_ip(r["ip"]))
         name = h(r["display_name"] or r["ip"])
         mac = h(r["mac"])
         vendor = h(r["display_vendor"] or "Unknown Vendor")
@@ -2213,7 +2156,6 @@ def devices():
     <input class="edit-field" data-field="name" value="{name}" style="display:none; max-width:170px;">
   </td>
   <td class="mono">{ip}</td>
-  <td>{network_name}</td>
   <td class="mono">{mac}</td>
   <td>
     <span class="view-val">{vendor}</span>
@@ -2288,7 +2230,6 @@ def devices():
 <tr>
 <th>{sort_link('Name', 'name')}</th>
 <th>{sort_link('IP', 'ip')}</th>
-<th>Network</th>
 <th>{sort_link('MAC', 'mac')}</th>
 <th>{sort_link('Vendor', 'vendor')}</th>
 <th>{sort_link('Type', 'type')}</th>
@@ -2297,7 +2238,7 @@ def devices():
 <th>{sort_link('Last Seen', 'last')}</th>
 <th>Action</th>
 </tr>
-{table or '<tr><td colspan="10">No devices yet</td></tr>'}
+{table or '<tr><td colspan="9">No devices yet</td></tr>'}
 </table>
 </div>
 """
@@ -2615,7 +2556,6 @@ def device(ip):
     status = r["display_status"] or "Active"
     manual_locked = bool(r["manual_locked"])
     private_mac = private_mac_address(r["mac"])
-    network_name = network_name_for_ip(ip)
 
     # Per-device DNS activity must be an exact client match.
     # Do NOT use LIKE here: a gateway IP could also match longer client IPs.
@@ -2790,7 +2730,6 @@ def device(ip):
       <div>
         <div class="identity-title">{h(device_name)} {detail_lock_badge} {'<span class="badge-private">Private MAC</span>' if private_mac else ''}</div>
         <div class="identity-line"><span>IP Address</span><b>{h(ip)}</b></div>
-        <div class="identity-line"><span>Network</span><b>{h(network_name)}</b></div>
         <div class="identity-line"><span>MAC Address</span><b>{h(r['mac'])}</b></div>
         <div class="identity-line"><span>Vendor</span><b>{h(vendor)}</b></div>
         <div class="identity-line"><span>Type</span><b>{h(dtype)}</b></div>
@@ -3156,7 +3095,6 @@ def traffic():
 <tr onclick="location.href='/device/{h(r['ip'])}?range={range_key()}'">
   <td>{h(r['name'])}</td>
   <td>{h(r['ip'])}</td>
-  <td>{h(network_name_for_ip(r['ip']))}</td>
   <td>{fmt_mb(r['downloaded_mb'])}</td>
   <td>{fmt_mb(r['uploaded_mb'])}</td>
   <td>{fmt_mb(r['total_mb'])}</td>
@@ -3196,7 +3134,6 @@ tr[onclick]:hover {{ background:rgba(0,190,255,.07); }}
 <tr>
 <th>{sort_link('Device', 'device')}</th>
 <th>{sort_link('IP', 'ip')}</th>
-<th>Network</th>
 <th>{sort_link('Download', 'download')}</th>
 <th>{sort_link('Upload', 'upload')}</th>
 <th>{sort_link('Total', 'total')}</th>
@@ -3515,7 +3452,7 @@ def application_detail(category):
         if monitoring_enabled
         else ""
     )
-    empty_colspan = 8 if monitoring_enabled else 7
+    empty_colspan = 7 if monitoring_enabled else 6
 
     def sort_link(label, key):
         next_dir = "desc"
@@ -3544,7 +3481,6 @@ def application_detail(category):
 <tr onclick="location.href='{href}'">
   <td>{icon_for_device(r['device_type'])} <b>{h(r['device_name'])}</b><br><span>{h(r['vendor'])}</span></td>
   <td>{h(r['client'])}</td>
-  <td>{h(network_name_for_ip(device_ip))}</td>
   <td>{int(r['domains'] or 0):,}</td>
   <td><div class="bar table-bar"><div style="width:{width}%"></div></div></td>
   <td><b>{total:,}</b></td>
@@ -3589,7 +3525,6 @@ def application_detail(category):
       <tr>
         <th>{sort_link('Device', 'device')}</th>
         <th>{sort_link('Client', 'client')}</th>
-        <th>Network</th>
         <th>{sort_link('Domains', 'domains')}</th>
         <th>Activity</th>
         <th>{sort_link('DNS Hits', 'queries')}</th>
@@ -3766,10 +3701,6 @@ def network_map():
 </tr>"""
         for r in rows[:12]
     )
-    configured_network_nodes = "".join(
-        f'<div class="map-node"><i class="fa-solid fa-network-wired"></i><b>{h(item["name"])}</b><span>{h(item["subnet"])}</span></div>'
-        for item in monitored_networks(c)
-    )
 
     body = f"""
 {topbar('Network Map')}
@@ -3778,7 +3709,7 @@ def network_map():
   <div class="map-line"></div>
   <div class="map-node"><i class="fa-solid fa-shield-halved"></i><b>NetSpecter Bridge</b><span>{h(c.get('packet_iface', 'br0'))}</span></div>
   <div class="map-line"></div>
-  {configured_network_nodes}
+  <div class="map-node"><i class="fa-solid fa-network-wired"></i><b>LAN</b><span>{h(c.get('lan_prefix'))}0/24</span></div>
 </div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -4117,18 +4048,6 @@ def settings():
         "ignore_ips": "Extra IPs to ignore, separated by commas. The gateway IP is always ignored automatically.",
         "packet_iface": "Bridge carrying monitored traffic, usually br0. Linux nftables counts forwarded bytes on this bridge.",
         "lan_prefix": "LAN prefix used to identify local devices, for example 192.168.1.",
-        "vlan1_name": "Optional additional monitored network name, for example Guest.",
-        "vlan1_subnet": "Optional VLAN subnet in CIDR format, for example 10.20.30.0/24.",
-        "vlan1_gateway_ip": "Optional VLAN gateway to exclude from device totals, for example 10.20.30.1.",
-        "vlan2_name": "Optional additional monitored network name.",
-        "vlan2_subnet": "Optional VLAN subnet in CIDR format.",
-        "vlan2_gateway_ip": "Optional VLAN gateway to exclude from device totals.",
-        "vlan3_name": "Optional additional monitored network name.",
-        "vlan3_subnet": "Optional VLAN subnet in CIDR format.",
-        "vlan3_gateway_ip": "Optional VLAN gateway to exclude from device totals.",
-        "vlan4_name": "Optional additional monitored network name.",
-        "vlan4_subnet": "Optional VLAN subnet in CIDR format.",
-        "vlan4_gateway_ip": "Optional VLAN gateway to exclude from device totals.",
         "adguard_url": "AdGuard Home URL used for DNS stats and controls.",
         "collect_interval_seconds": "Seconds between measured traffic interval writes. Live speed freshness follows this value.",
         "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 30 for the 30-day view.",
@@ -4141,18 +4060,6 @@ def settings():
         "ignore_ips": "Extra Ignored IPs",
         "packet_iface": "Monitored Bridge Interface",
         "lan_prefix": "LAN Prefix",
-        "vlan1_name": "VLAN 1 Name (Optional)",
-        "vlan1_subnet": "VLAN 1 Subnet (Optional)",
-        "vlan1_gateway_ip": "VLAN 1 Gateway IP (Optional)",
-        "vlan2_name": "VLAN 2 Name (Optional)",
-        "vlan2_subnet": "VLAN 2 Subnet (Optional)",
-        "vlan2_gateway_ip": "VLAN 2 Gateway IP (Optional)",
-        "vlan3_name": "VLAN 3 Name (Optional)",
-        "vlan3_subnet": "VLAN 3 Subnet (Optional)",
-        "vlan3_gateway_ip": "VLAN 3 Gateway IP (Optional)",
-        "vlan4_name": "VLAN 4 Name (Optional)",
-        "vlan4_subnet": "VLAN 4 Subnet (Optional)",
-        "vlan4_gateway_ip": "VLAN 4 Gateway IP (Optional)",
         "adguard_url": "AdGuard URL",
         "adguard_user": "AdGuard User",
         "adguard_pass": "AdGuard Password",
@@ -4166,10 +4073,6 @@ def settings():
     }
     preferred_order = [
         "gateway_ip", "ignore_ips", "lan_prefix", "packet_iface",
-        "vlan1_name", "vlan1_subnet", "vlan1_gateway_ip",
-        "vlan2_name", "vlan2_subnet", "vlan2_gateway_ip",
-        "vlan3_name", "vlan3_subnet", "vlan3_gateway_ip",
-        "vlan4_name", "vlan4_subnet", "vlan4_gateway_ip",
         "adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds",
         "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
         "web_host", "web_port",
