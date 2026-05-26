@@ -26,12 +26,16 @@ import fcntl
 import ipaddress
 import json
 import os
+import re
 import signal
+import smtplib
 import sqlite3
+import ssl
 import subprocess
 import threading
 import time
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import quote
 
@@ -71,8 +75,10 @@ OUI_PATH = DATA_DIR / "oui_cache.json"
 SYSTEM_OUI_PATH = Path("/usr/share/ieee-data/oui.txt")
 SECRET_KEY_PATH = CONFIG_DIR / "secret.key"
 COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
+SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
+IDS_EMAIL_STATE_PATH = DATA_DIR / "ids_email_state.json"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password"}
 collector_lock_handle = None
 
 
@@ -112,6 +118,17 @@ DEFAULT_CONFIG = {
     "unifi_site_id": "",
     "unifi_api_key": "",
     "unifi_skip_tls_verify": False,
+    "ids_unknown_only": False,
+    "ids_excluded_ips": [],
+    "ids_email_enabled": False,
+    "smtp_host": "",
+    "smtp_port": 587,
+    "smtp_security": "starttls",
+    "smtp_username": "",
+    "smtp_password": "",
+    "smtp_from": "",
+    "smtp_to": "",
+    "ids_email_cooldown_minutes": 30,
 }
 
 
@@ -894,6 +911,118 @@ def run_sql(sql, params=()):
         print(f"DB write failed: {e}")
 
 
+def ids_known_ips():
+    try:
+        con = connect_db()
+        rows = con.execute("SELECT ip FROM devices").fetchall()
+        con.close()
+        return {str(row[0]) for row in rows}
+    except Exception:
+        return set()
+
+
+def send_ids_email(config, alert):
+    host = str(config.get("smtp_host", "") or "").strip()
+    username = str(config.get("smtp_username", "") or "").strip()
+    password = str(config.get("smtp_password", "") or "")
+    from_address = str(config.get("smtp_from", "") or username).strip()
+    to_address = str(config.get("smtp_to", "") or "").strip()
+    security = str(config.get("smtp_security", "starttls") or "starttls").strip().lower()
+    if not host or not from_address or not to_address:
+        return False
+    message = EmailMessage()
+    message["Subject"] = f"NetSpecter IDS P{alert['priority']}: {alert['signature']}"
+    message["From"] = from_address
+    message["To"] = to_address
+    message.set_content(
+        "NetSpecter detected a new visible IDS alert.\n\n"
+        f"Time: {alert['ts']}\n"
+        f"Priority: {alert['priority']}\n"
+        f"Alert: {alert['signature']}\n"
+        f"Classification: {alert['classification']}\n"
+        f"Protocol: {alert['protocol']}\n"
+        f"Source: {alert['source']}\n"
+        f"Destination: {alert['destination']}\n"
+    )
+    try:
+        port = int(config.get("smtp_port", 587) or 587)
+        if security == "ssl":
+            smtp = smtplib.SMTP_SSL(host, port, timeout=12, context=ssl.create_default_context())
+        else:
+            smtp = smtplib.SMTP(host, port, timeout=12)
+        with smtp:
+            if security == "starttls":
+                smtp.starttls(context=ssl.create_default_context())
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(message)
+        return True
+    except Exception as error:
+        print(f"IDS email send failed: {error}")
+        return False
+
+
+def process_ids_email_alerts(config):
+    """Email newly appended visible IDS alerts, with signature/source cooldown."""
+    if not config.get("ids_email_enabled") or not SURICATA_FAST_LOG.exists():
+        return
+    try:
+        result = subprocess.run(
+            ["tail", "-n", "400", str(SURICATA_FAST_LOG)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=4,
+            check=False,
+        )
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception as error:
+        print(f"IDS email log read failed: {error}")
+        return
+    if not lines:
+        return
+    state = load_json(IDS_EMAIL_STATE_PATH, {})
+    previous = str(state.get("last_line", "") or "")
+    if not previous:
+        IDS_EMAIL_STATE_PATH.write_text(json.dumps({"last_line": lines[-1], "sent": {}}, indent=2))
+        return
+    try:
+        start = lines.index(previous) + 1
+    except ValueError:
+        IDS_EMAIL_STATE_PATH.write_text(json.dumps({"last_line": lines[-1], "sent": state.get("sent", {})}, indent=2))
+        return
+    pattern = re.compile(
+        r"^(?P<ts>\S+)\s+\[\*\*\]\s+\[(?P<sid>[^\]]+)\]\s+"
+        r"(?P<signature>.*?)\s+\[\*\*\]\s+\[Classification:\s*(?P<classification>.*?)\]\s+"
+        r"\[Priority:\s*(?P<priority>\d+)\]\s+\{(?P<protocol>[^}]+)\}\s+"
+        r"(?P<source>\S+)\s+->\s+(?P<destination>\S+)$"
+    )
+    known_ips = ids_known_ips()
+    excluded_ips = set(cfg_list(config.get("ids_excluded_ips", [])))
+    try:
+        cooldown_minutes = max(1, int(config.get("ids_email_cooldown_minutes", 30) or 30))
+    except (TypeError, ValueError):
+        cooldown_minutes = 30
+    cooldown_seconds = cooldown_minutes * 60
+    now = time.time()
+    sent = {key: float(ts) for key, ts in state.get("sent", {}).items() if now - float(ts) < cooldown_seconds}
+    for line in lines[start:]:
+        match = pattern.match(line)
+        if not match:
+            continue
+        alert = match.groupdict()
+        source_ip = alert["source"].rsplit(":", 1)[0].strip()
+        if source_ip in excluded_ips or (config.get("ids_unknown_only") and source_ip in known_ips):
+            continue
+        key = f"{source_ip}|{alert['signature']}"
+        if key in sent:
+            continue
+        if send_ids_email(config, alert):
+            sent[key] = now
+            print(f"IDS email notification sent: {alert['signature']} from {source_ip}")
+    IDS_EMAIL_STATE_PATH.write_text(json.dumps({"last_line": lines[-1], "sent": sent}, indent=2))
+
+
 def write_heartbeat(status="OK", note=""):
     c = cfg()
     run_sql(
@@ -1504,6 +1633,7 @@ def adguard_querylog_loop():
         try:
             refresh_adguard_client_names(c)
             refresh_unifi_clients(c)
+            process_ids_email_alerts(c)
             import_adguard_querylog()
             update_one_remote_location()
         except Exception as e:

@@ -12,9 +12,12 @@ import csv
 import io
 import secrets
 import re
+import smtplib
+import ssl
 from functools import wraps
 from collections import Counter
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -91,13 +94,25 @@ DEFAULT_CONFIG = {
     "scheduled_speedtests_per_day": 0,
     "ids_unknown_only": False,
     "ids_excluded_ips": [],
+    "ids_email_enabled": False,
+    "smtp_host": "",
+    "smtp_port": 587,
+    "smtp_security": "starttls",
+    "smtp_username": "",
+    "smtp_password": "",
+    "smtp_from": "",
+    "smtp_to": "",
+    "ids_email_cooldown_minutes": 30,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
     "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
     "ids_unknown_only", "ids_excluded_ips",
+    "ids_email_enabled", "smtp_host", "smtp_port", "smtp_security",
+    "smtp_username", "smtp_password", "smtp_from", "smtp_to",
+    "ids_email_cooldown_minutes",
 }
 ENCRYPTED_PREFIX = "enc:"
 
@@ -3808,15 +3823,80 @@ def ids_device_names():
     return {str(row["ip"]): str(row["name"] or row["ip"]) for row in rows}
 
 
+def send_smtp_message(config, subject, body):
+    host = str(config.get("smtp_host", "") or "").strip()
+    username = str(config.get("smtp_username", "") or "").strip()
+    password = str(config.get("smtp_password", "") or "")
+    from_address = str(config.get("smtp_from", "") or username).strip()
+    to_address = str(config.get("smtp_to", "") or "").strip()
+    security = str(config.get("smtp_security", "starttls") or "starttls").strip().lower()
+    if not host or not from_address or not to_address:
+        return False, "Enter SMTP host, From address and alert recipient first."
+    try:
+        port = int(config.get("smtp_port", 587) or 587)
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = from_address
+        message["To"] = to_address
+        message.set_content(body)
+        if security == "ssl":
+            smtp = smtplib.SMTP_SSL(host, port, timeout=12, context=ssl.create_default_context())
+        else:
+            smtp = smtplib.SMTP(host, port, timeout=12)
+        with smtp:
+            if security == "starttls":
+                smtp.starttls(context=ssl.create_default_context())
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(message)
+        return True, "Test email sent."
+    except Exception as error:
+        return False, f"SMTP test failed: {error}"
+
+
 @app.route("/ids-alerts", methods=["GET", "POST"])
 def ids_alerts():
     c = cfg()
+    action_notice = ""
+    action_ok = True
     if request.method == "POST":
-        c["ids_unknown_only"] = request.form.get("ids_unknown_only") == "1"
-        requested_ips = cfg_list(request.form.get("ids_excluded_ips", ""))
-        c["ids_excluded_ips"] = [ip for ip in requested_ips if valid_lan_ip(ip)]
+        action = request.form.get("action", "filters")
+        if action == "filters":
+            c["ids_unknown_only"] = request.form.get("ids_unknown_only") == "1"
+            requested_ips = cfg_list(request.form.get("ids_excluded_ips", ""))
+            c["ids_excluded_ips"] = [ip for ip in requested_ips if valid_lan_ip(ip)]
+            save_cfg(c)
+            restart_collector_service()
+            return redirect("/ids-alerts?saved=filters")
+        c["ids_email_enabled"] = request.form.get("ids_email_enabled") == "1"
+        c["smtp_host"] = request.form.get("smtp_host", "").strip()
+        c["smtp_security"] = request.form.get("smtp_security", "starttls").strip()
+        c["smtp_username"] = request.form.get("smtp_username", "").strip()
+        c["smtp_from"] = request.form.get("smtp_from", "").strip()
+        c["smtp_to"] = request.form.get("smtp_to", "").strip()
+        smtp_password = request.form.get("smtp_password", "")
+        if smtp_password:
+            c["smtp_password"] = smtp_password
+        if request.form.get("clear_smtp_password") == "1":
+            c["smtp_password"] = ""
+        try:
+            c["smtp_port"] = max(1, min(65535, int(request.form.get("smtp_port", "587"))))
+        except ValueError:
+            c["smtp_port"] = 587
+        try:
+            c["ids_email_cooldown_minutes"] = max(1, min(1440, int(request.form.get("ids_email_cooldown_minutes", "30"))))
+        except ValueError:
+            c["ids_email_cooldown_minutes"] = 30
         save_cfg(c)
-        return redirect("/ids-alerts?saved=1")
+        restart_collector_service()
+        if action == "test_email":
+            action_ok, action_notice = send_smtp_message(
+                c,
+                "NetSpecter IDS email test",
+                "This is a test email from NetSpecter IDS alert notifications.",
+            )
+        else:
+            return redirect("/ids-alerts?saved=email")
 
     alerts, error = recent_suricata_alerts()
     names = ids_device_names()
@@ -3861,10 +3941,19 @@ def ids_alerts():
 """
 
     notice = f'<div class="setup-warning">{h(error)}</div>' if error else ""
-    if request.args.get("saved") == "1":
+    if request.args.get("saved") == "filters":
         notice += '<div class="setup-ok">IDS display filters saved.</div>'
+    if request.args.get("saved") == "email":
+        notice += '<div class="setup-ok">IDS email settings saved. The collector has restarted.</div>'
+    if action_notice:
+        notice += f'<div class="{"setup-ok" if action_ok else "setup-warning"}">{h(action_notice)}</div>'
     unknown_checked = " checked" if unknown_only else ""
     excluded_value = ", ".join(sorted(excluded_ips))
+    email_checked = " checked" if c.get("ids_email_enabled") else ""
+    security_options = "".join(
+        f'<option value="{option}"{" selected" if str(c.get("smtp_security", "starttls")) == option else ""}>{label}</option>'
+        for option, label in [("starttls", "STARTTLS"), ("ssl", "SSL/TLS"), ("none", "No TLS")]
+    )
     body = f"""
 {topbar('IDS Alerts')}
 {notice}
@@ -3888,7 +3977,36 @@ def ids_alerts():
     <label>Excluded Source IPs</label>
     <input name="ids_excluded_ips" value="{h(excluded_value)}" placeholder="Comma-separated expected source IPs">
     <small>Hide repeated expected alerts from these source IPs in this page, for example an approved media box.</small>
-    <button type="submit">Save IDS Display Filters</button>
+    <button type="submit" name="action" value="filters">Save IDS Display Filters</button>
+  </form>
+</div>
+<div class="panel settings">
+  <h2>Email Notifications (Optional)</h2>
+  <p>Send an email for new IDS alerts that are visible under the filters above. Repeating alert signatures are rate-limited.</p>
+  <form method="post">
+    {csrf_input()}
+    <label><input type="checkbox" name="ids_email_enabled" value="1" style="width:auto"{email_checked}> Enable IDS email alerts</label>
+    <label>SMTP Host</label>
+    <input name="smtp_host" value="{h(c.get('smtp_host', ''))}" placeholder="smtp.example.com">
+    <label>SMTP Port</label>
+    <input name="smtp_port" value="{h(c.get('smtp_port', 587))}">
+    <label>SMTP Security</label>
+    <select name="smtp_security">{security_options}</select>
+    <label>SMTP Username</label>
+    <input name="smtp_username" value="{h(c.get('smtp_username', ''))}">
+    <label>SMTP Password</label>
+    <input name="smtp_password" type="password" placeholder="Leave blank to keep saved SMTP password">
+    <small>The SMTP password is encrypted in local NetSpecter configuration and is not written to GitHub.</small>
+    <label><input type="checkbox" name="clear_smtp_password" value="1" style="width:auto"> Clear saved SMTP password</label>
+    <label>From Address</label>
+    <input name="smtp_from" value="{h(c.get('smtp_from', ''))}" placeholder="netspecter@example.com">
+    <label>Send Alerts To</label>
+    <input name="smtp_to" value="{h(c.get('smtp_to', ''))}" placeholder="you@example.com">
+    <label>Repeat Alert Cooldown Minutes</label>
+    <input name="ids_email_cooldown_minutes" value="{h(c.get('ids_email_cooldown_minutes', 30))}">
+    <small>The same alert signature and source IP will send at most once during this cooldown period.</small>
+    <button type="submit" name="action" value="save_email">Save Email Settings</button>
+    <button type="submit" name="action" value="test_email">Save and Send Test Email</button>
   </form>
 </div>
 <div class="layout">

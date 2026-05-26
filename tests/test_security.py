@@ -206,8 +206,10 @@ class WebSecurityTests(unittest.TestCase):
         rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
         self.assertFalse(example["unifi_enabled"])
         self.assertFalse(example["unifi_skip_tls_verify"])
+        self.assertFalse(example["ids_email_enabled"])
         self.assertEqual(0, example["scheduled_speedtests_per_day"])
         self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
+        self.assertIn("smtp_password", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("/integrations", rules)
         self.assertIn("/speed-tests", rules)
         self.assertIn("def find_unifi_site(config):", source)
@@ -226,6 +228,10 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("WHERE ip=? AND (name IS NULL OR TRIM(name)='' OR name=ip)", collector)
         self.assertIn('"X-API-Key": api_key', collector)
         self.assertIn("UNIFI_CLIENT_REFRESH_SECONDS = 300", collector)
+        self.assertIn("process_ids_email_alerts(c)", collector)
+        self.assertIn("def send_ids_email(config, alert):", collector)
+        self.assertIn("IDS_EMAIL_STATE_PATH", collector)
+        self.assertIn("smtp_password", collector)
         self.assertIn("CREATE TABLE IF NOT EXISTS speed_tests", source)
         self.assertIn("scheduled_speedtest.py", installer)
         self.assertIn("netspecter-speedtest.timer", installer)
@@ -255,6 +261,9 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("Only show alerts from source IPs not already known in Devices", source)
         self.assertIn("Excluded Source IPs", source)
         self.assertIn("hidden alerts remain in Suricata logs", source)
+        self.assertIn("Enable IDS email alerts", source)
+        self.assertIn("Save and Send Test Email", source)
+        self.assertIn("def send_smtp_message(config, subject, body):", source)
 
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()
