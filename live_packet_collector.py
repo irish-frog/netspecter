@@ -388,6 +388,7 @@ def refresh_unifi_clients(config):
         return
 
     imported = 0
+    named_imported = 0
     offset = 0
     working_base = None
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -425,6 +426,7 @@ def refresh_unifi_clients(config):
                 if not ip:
                     continue
                 name = str(client.get("name") or ip).strip()
+                has_unifi_name = name != ip
                 mac = str(client.get("macAddress") or "").strip().upper()
                 vendor = vendor_from_mac(mac)
                 dtype = classify_device(vendor)
@@ -444,6 +446,17 @@ def refresh_unifi_clients(config):
                     """,
                     (ip, name, mac, vendor, dtype, connected, now),
                 )
+                if has_unifi_name:
+                    named_imported += 1
+                    # Replace an automatically locked placeholder, but preserve a user-entered name.
+                    run_sql(
+                        """
+                        UPDATE device_overrides
+                        SET name=?, updated_at=?
+                        WHERE ip=? AND (name IS NULL OR TRIM(name)='' OR name=ip)
+                        """,
+                        (name, now, ip),
+                    )
                 imported += 1
             count = int(payload.get("count", len(clients)) or 0)
             total = int(payload.get("totalCount", count) or count)
@@ -451,7 +464,7 @@ def refresh_unifi_clients(config):
             if not clients or offset >= total:
                 break
         unifi_clients_refreshed_at = now_monotonic
-        print(f"UniFi connected clients imported: {imported}")
+        print(f"UniFi connected clients imported: {imported} ({named_imported} named)")
     except Exception as e:
         print(f"UniFi client import failed: {e}")
 

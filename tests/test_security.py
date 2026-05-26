@@ -222,6 +222,8 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("refresh_unifi_clients", collector)
         self.assertIn("def unifi_verify_tls(config):", collector)
         self.assertIn("def unifi_connector_bases(config):", collector)
+        self.assertIn("UniFi connected clients imported: {imported} ({named_imported} named)", collector)
+        self.assertIn("WHERE ip=? AND (name IS NULL OR TRIM(name)='' OR name=ip)", collector)
         self.assertIn('"X-API-Key": api_key', collector)
         self.assertIn("UNIFI_CLIENT_REFRESH_SECONDS = 300", collector)
         self.assertIn("CREATE TABLE IF NOT EXISTS speed_tests", source)

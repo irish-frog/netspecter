@@ -4120,7 +4120,7 @@ def unifi_client_endpoint(config, base=None):
     site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
     if not base or not site_id:
         return ""
-    return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=1"
+    return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=25"
 
 
 def unifi_verify_tls(config):
@@ -4207,7 +4207,10 @@ def check_unifi_connection(config):
                 failure = response_error
                 continue
             count = payload.get("totalCount", payload.get("count", 0)) if isinstance(payload, dict) else 0
-            return True, f"Connected. UniFi reports {int(count or 0)} connected client(s)."
+            clients = payload.get("data", []) if isinstance(payload, dict) else []
+            named = sum(1 for client in clients if str(client.get("name", "") or "").strip())
+            checked = len(clients)
+            return True, f"Connected. UniFi reports {int(count or 0)} connected client(s); {named} of {checked} sampled client(s) have a UniFi name."
         return False, failure or "UniFi connection did not return a usable response."
     except Exception as error:
         return False, f"UniFi connection failed: {error}"
