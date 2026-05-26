@@ -2047,12 +2047,12 @@ async function loadDashboardTraffic() {{
   const context = document.getElementById("dashboardTrafficChart").getContext("2d");
   if (dashboardTrafficChart) dashboardTrafficChart.destroy();
   dashboardTrafficChart = new Chart(context, {{
-    type: "line",
+    type: "bar",
     data: {{
       labels: data.labels,
       datasets: [
-        {{ label: "Download", data: data.downloaded, borderColor: "#18aaff", backgroundColor: "rgba(24,170,255,.08)", borderWidth: 2.5, tension: .25, pointRadius: 0, fill: true }},
-        {{ label: "Upload", data: data.uploaded, borderColor: "#9c6cff", backgroundColor: "rgba(156,108,255,.04)", borderWidth: 2.5, tension: .25, pointRadius: 0, fill: true }}
+        {{ label: "Download", data: data.downloaded, borderColor: "#18aaff", backgroundColor: "rgba(24,170,255,.72)", borderWidth: 1 }},
+        {{ label: "Upload", data: data.uploaded, borderColor: "#9c6cff", backgroundColor: "rgba(156,108,255,.72)", borderWidth: 1 }}
       ]
     }},
     options: {{
@@ -3059,24 +3059,30 @@ async function loadHistory(period) {{
   }}
 
   historyChart = new Chart(ctx, {{
-    type: "line",
+    type: "bar",
     data: {{
       labels: data.labels,
       datasets: [
         {{
           label: "Downloaded MB",
           data: data.downloaded,
-          tension: 0.25
+          backgroundColor: "rgba(24,170,255,.72)",
+          borderColor: "#18aaff",
+          borderWidth: 1
         }},
         {{
           label: "Uploaded MB",
           data: data.uploaded,
-          tension: 0.25
+          backgroundColor: "rgba(156,108,255,.72)",
+          borderColor: "#9c6cff",
+          borderWidth: 1
         }},
         {{
           label: "Total MB",
           data: data.total,
-          tension: 0.25
+          backgroundColor: "rgba(0,221,199,.44)",
+          borderColor: "#00ddc7",
+          borderWidth: 1
         }}
       ]
     }},
@@ -4512,12 +4518,12 @@ def speed_tests():
 const speedCtx = document.getElementById('speedHistoryChart');
 if (speedCtx) {{
   new Chart(speedCtx, {{
-    type: 'line',
+    type: 'bar',
     data: {{
       labels: {chart_labels},
       datasets: [
-        {{label: 'Download Mbps', data: {chart_download}, borderColor: '#5ba8ff', tension: .25}},
-        {{label: 'Upload Mbps', data: {chart_upload}, borderColor: '#a68bff', tension: .25}}
+        {{label: 'Download Mbps', data: {chart_download}, borderColor: '#5ba8ff', backgroundColor: 'rgba(91,168,255,.72)', borderWidth: 1}},
+        {{label: 'Upload Mbps', data: {chart_upload}, borderColor: '#a68bff', backgroundColor: 'rgba(166,139,255,.72)', borderWidth: 1}}
       ]
     }},
     options: {{responsive:true, plugins:{{legend:{{labels:{{color:'#d7e6f5'}}}}}}, scales:{{x:{{ticks:{{color:'#9aa7bb'}}}}, y:{{ticks:{{color:'#9aa7bb'}}}}}}}}

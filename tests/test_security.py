@@ -236,6 +236,11 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("def live_all_host_speeds():", source)
         self.assertIn("live_speeds = live_all_host_speeds()", source)
 
+    def test_traffic_and_speed_history_graphs_use_bar_charts(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        self.assertGreaterEqual(source.count('type: "bar"'), 2)
+        self.assertIn("type: 'bar'", source)
+
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()
         collector = (SOURCE_DIR / "live_packet_collector.py").read_text()
