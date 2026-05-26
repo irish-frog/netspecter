@@ -111,6 +111,7 @@ DEFAULT_CONFIG = {
     "unifi_connector_url": "",
     "unifi_site_id": "",
     "unifi_api_key": "",
+    "unifi_skip_tls_verify": False,
 }
 
 
@@ -364,6 +365,13 @@ def unifi_connector_bases(config):
     return [base]
 
 
+def unifi_verify_tls(config):
+    verify = not bool(config.get("unifi_skip_tls_verify"))
+    if not verify:
+        requests.packages.urllib3.disable_warnings()
+    return verify
+
+
 def refresh_unifi_clients(config):
     """Optionally import connected client inventory through the official UniFi API."""
     global unifi_clients_refreshed_at
@@ -393,6 +401,7 @@ def refresh_unifi_clients(config):
                     params={"offset": offset, "limit": 100},
                     headers={"Accept": "application/json", "X-API-Key": api_key},
                     timeout=12,
+                    verify=unifi_verify_tls(config),
                 )
                 if response.status_code != 200:
                     failure = f"HTTP {response.status_code}"

@@ -85,13 +85,14 @@ DEFAULT_CONFIG = {
     "unifi_connector_url": "",
     "unifi_site_id": "",
     "unifi_api_key": "",
+    "unifi_skip_tls_verify": False,
     "scheduled_speedtests_per_day": 0,
 }
 
 SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
-    "unifi_api_key", "scheduled_speedtests_per_day",
+    "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
 }
 ENCRYPTED_PREFIX = "enc:"
 
@@ -4084,6 +4085,13 @@ def unifi_client_endpoint(config, base=None):
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=1"
 
 
+def unifi_verify_tls(config):
+    verify = not bool(config.get("unifi_skip_tls_verify"))
+    if not verify:
+        requests.packages.urllib3.disable_warnings()
+    return verify
+
+
 def unifi_json_response(result):
     content_type = str(result.headers.get("Content-Type", "") or "").lower()
     try:
@@ -4108,9 +4116,10 @@ def find_unifi_site(config):
                 params={"offset": 0, "limit": 100},
                 headers={"Accept": "application/json", "X-API-Key": api_key},
                 timeout=12,
+                verify=unifi_verify_tls(config),
             )
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}. Check the API key."
+                failure = f"UniFi API returned HTTP {result.status_code}. The API key was not accepted for this URL."
                 continue
             payload, response_error = unifi_json_response(result)
             if response_error:
@@ -4150,6 +4159,7 @@ def check_unifi_connection(config):
                 unifi_client_endpoint(config, base),
                 headers={"Accept": "application/json", "X-API-Key": api_key},
                 timeout=12,
+                verify=unifi_verify_tls(config),
             )
             if result.status_code != 200:
                 failure = f"UniFi API returned HTTP {result.status_code}."
@@ -4174,6 +4184,7 @@ def integrations():
         c["unifi_enabled"] = request.form.get("unifi_enabled") == "1"
         c["unifi_connector_url"] = request.form.get("unifi_connector_url", "").strip()
         c["unifi_site_id"] = request.form.get("unifi_site_id", "").strip()
+        c["unifi_skip_tls_verify"] = request.form.get("unifi_skip_tls_verify") == "1"
         api_key = request.form.get("unifi_api_key", "")
         if api_key:
             c["unifi_api_key"] = api_key
@@ -4199,6 +4210,7 @@ def integrations():
             notice = "Integration options saved. The collector has restarted."
 
     enabled_checked = " checked" if c.get("unifi_enabled") else ""
+    skip_tls_checked = " checked" if c.get("unifi_skip_tls_verify") else ""
     schedule_options = "".join(
         f'<option value="{number}"{" selected" if int(c.get("scheduled_speedtests_per_day", 0) or 0) == number else ""}>{number if number else "Off"}</option>'
         for number in range(0, 6)
@@ -4213,9 +4225,11 @@ def integrations():
   <form method="post">
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
-    <label>UniFi Connector URL</label>
-    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/proxy/network/integration">
-    <small>Use the Network API connector URL for your console, without the site or clients part. NetSpecter will restore the required /proxy portion if it is missing.</small>
+    <label>UniFi Network API URL</label>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://gateway-address/proxy/network/integration">
+    <small>Use a local UniFi gateway URL where possible, or a remote api.ui.com connector URL. Do not add the site or clients part.</small>
+    <label><input type="checkbox" name="unifi_skip_tls_verify" value="1" style="width:auto"{skip_tls_checked}> Allow self-signed certificate for local UniFi gateway</label>
+    <small>Enable this only when using your local gateway HTTPS address and its built-in certificate.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
     <small>Leave this blank and use Find Site Automatically after entering your API key.</small>

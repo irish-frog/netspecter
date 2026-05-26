@@ -13,6 +13,7 @@
   "unifi_connector_url": "",
   "unifi_site_id": "",
   "unifi_api_key": "",
+  "unifi_skip_tls_verify": false,
   "scheduled_speedtests_per_day": 0,
   "packet_iface": "br0",
   "gateway_ip": "",
