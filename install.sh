@@ -63,6 +63,7 @@ cp app.py "$INSTALL_DIR/app.py"
 cp gunicorn_config.py "$INSTALL_DIR/gunicorn_config.py"
 cp wsgi.py "$INSTALL_DIR/wsgi.py"
 cp live_packet_collector.py "$INSTALL_DIR/live_packet_collector.py"
+cp scheduled_speedtest.py "$INSTALL_DIR/scheduled_speedtest.py"
 cp collector_watchdog.sh "$INSTALL_DIR/collector_watchdog.sh"
 cp -r static/. "$INSTALL_DIR/static/"
 cp -r scripts/. "$INSTALL_DIR/scripts/"
@@ -86,6 +87,7 @@ chown -R root:root "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"
 chmod 700 "$CONFIG_DIR" "$CONFIG_DIR/adguard" "$DATA_DIR"
 chmod 600 "$CONFIG_DIR/config.json" "$DATA_DIR/netspecter.db" "$DATA_DIR/cache.json" "$DATA_DIR/oui_cache.json"
 chmod +x "$INSTALL_DIR/live_packet_collector.py"
+chmod +x "$INSTALL_DIR/scheduled_speedtest.py"
 chmod +x "$INSTALL_DIR/collector_watchdog.sh"
 chmod +x "$INSTALL_DIR/scripts/render-adguard-template.sh"
 
@@ -97,10 +99,13 @@ cp systemd/netspecter-web.service "$SERVICE_DIR/netspecter-web.service"
 cp systemd/netspecter-collector.service "$SERVICE_DIR/netspecter-collector.service"
 cp systemd/netspecter-watchdog.service "$SERVICE_DIR/netspecter-watchdog.service"
 cp systemd/netspecter-watchdog.timer "$SERVICE_DIR/netspecter-watchdog.timer"
+cp systemd/netspecter-speedtest.service "$SERVICE_DIR/netspecter-speedtest.service"
+cp systemd/netspecter-speedtest.timer "$SERVICE_DIR/netspecter-speedtest.timer"
 systemctl daemon-reload
-systemctl enable netspecter-web netspecter-collector netspecter-watchdog.timer
+systemctl enable netspecter-web netspecter-collector netspecter-watchdog.timer netspecter-speedtest.timer
 systemctl restart netspecter-web netspecter-collector
 systemctl restart netspecter-watchdog.timer
+systemctl restart netspecter-speedtest.timer
 systemctl enable --now vnstat || true
 systemctl enable AdGuardHome || true
 

@@ -178,7 +178,7 @@ class WebSecurityTests(unittest.TestCase):
     def test_stylesheet_url_changes_when_sidebar_watermark_css_changes(self):
         source = (SOURCE_DIR / "app.py").read_text()
         css = (SOURCE_DIR / "static" / "theme.css").read_text()
-        self.assertIn("/static/theme.css?v=20260525g", source)
+        self.assertIn("/static/theme.css?v=20260526m", source)
         self.assertIn('<div class="designer-credit">Designed by Gavin Reniers</div>\n  <img src="/static/netspecter-logo-sidebar.png" class="brand-logo">', source)
         self.assertIn("color: #2B4470;", css)
         self.assertNotIn("position: absolute;\n  left: 16px;\n  right: 16px;\n  bottom: 14px;\n  color: rgba(154, 167, 187, .55);", css)
@@ -196,6 +196,26 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("ookla/speedtest-cli/script.deb.sh", installer)
         self.assertIn("dpkg-query -W -f='${Status}' speedtest", installer)
         self.assertIn("speedtest", installer)
+
+    def test_optional_unifi_discovery_and_scheduled_speed_history_ship_disabled(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        collector = (SOURCE_DIR / "live_packet_collector.py").read_text()
+        installer = (SOURCE_DIR / "install.sh").read_text()
+        schedule = (SOURCE_DIR / "scheduled_speedtest.py").read_text()
+        example = json.loads((SOURCE_DIR / "config.example.json").read_text())
+        rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
+        self.assertFalse(example["unifi_enabled"])
+        self.assertEqual(0, example["scheduled_speedtests_per_day"])
+        self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
+        self.assertIn("/integrations", rules)
+        self.assertIn("/speed-tests", rules)
+        self.assertIn("refresh_unifi_clients", collector)
+        self.assertIn('"X-API-Key": api_key', collector)
+        self.assertIn("UNIFI_CLIENT_REFRESH_SECONDS = 300", collector)
+        self.assertIn("CREATE TABLE IF NOT EXISTS speed_tests", source)
+        self.assertIn("scheduled_speedtest.py", installer)
+        self.assertIn("netspecter-speedtest.timer", installer)
+        self.assertIn('if runs == 0:', schedule)
 
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()

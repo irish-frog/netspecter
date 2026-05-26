@@ -11,6 +11,7 @@ import html
 import csv
 import io
 import secrets
+import re
 from functools import wraps
 from datetime import datetime
 from pathlib import Path
@@ -80,9 +81,18 @@ DEFAULT_CONFIG = {
     "traffic_retention_days": 30,
     "dns_retention_days": 14,
     "public_ip_cache_seconds": 1800,
+    "unifi_enabled": False,
+    "unifi_connector_url": "",
+    "unifi_site_id": "",
+    "unifi_api_key": "",
+    "scheduled_speedtests_per_day": 0,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
+INTEGRATION_SETTINGS_KEYS = {
+    "unifi_enabled", "unifi_connector_url", "unifi_site_id",
+    "unifi_api_key", "scheduled_speedtests_per_day",
+}
 ENCRYPTED_PREFIX = "enc:"
 
 NOISE_DOMAINS = [
@@ -735,6 +745,19 @@ def init_db():
             updated_at TEXT
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS speed_tests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            source TEXT NOT NULL,
+            latency_ms REAL,
+            download_mbps REAL,
+            upload_mbps REAL,
+            result_text TEXT,
+            success INTEGER DEFAULT 0
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_speed_tests_ts ON speed_tests(ts)")
     con.commit()
     con.close()
 
@@ -1436,6 +1459,8 @@ def shell(title, body, active="Dashboard"):
         ("Map", "/map", "fa-diagram-project"),
         ("Exports", "/exports", "fa-file-export"),
         ("AdGuard", "/adguard", "fa-shield-halved"),
+        ("Speed Tests", "/speed-tests", "fa-gauge-high"),
+        ("Integrations", "/integrations", "fa-plug"),
         ("Health", "/health", "fa-heart-pulse"),
         ("Settings", "/settings", "fa-gear"),
         ("System", "/system", "fa-server"),
@@ -2546,6 +2571,41 @@ def device(ip):
     )
 
     if not rows:
+        inventory = query(
+            """
+            SELECT
+                d.*,
+                COALESCE(o.name, d.name, d.ip) AS display_name,
+                COALESCE(o.vendor, d.vendor, 'Unknown Vendor') AS display_vendor,
+                COALESCE(o.device_type, d.device_type, 'Unknown') AS display_type,
+                COALESCE(o.status, d.status, 'Active') AS display_status
+            FROM devices d
+            LEFT JOIN device_overrides o ON o.ip=d.ip
+            WHERE d.ip=?
+            LIMIT 1
+            """,
+            (ip,),
+        )
+        if inventory:
+            d = inventory[0]
+            inventory_body = f"""
+{topbar(h(d['display_name'] or ip))}
+<div class="panel">
+  <h2>Device Identity</h2>
+  <p>This device was discovered from network inventory or DNS activity. No measured bridge traffic is available for the selected period.</p>
+  <table>
+    <tr><th>Name</th><td>{h(d['display_name'] or ip)}</td></tr>
+    <tr><th>IP Address</th><td>{h(ip)}</td></tr>
+    <tr><th>MAC Address</th><td>{h(d['mac'] or '-')}</td></tr>
+    <tr><th>Manufacturer</th><td>{h(d['display_vendor'] or 'Unknown Vendor')}</td></tr>
+    <tr><th>Type</th><td>{h(d['display_type'] or 'Unknown')}</td></tr>
+    <tr><th>Status</th><td>{h(d['display_status'] or 'Active')}</td></tr>
+    <tr><th>First Seen</th><td>{h(d['first_seen'] or '-')}</td></tr>
+    <tr><th>Last Seen</th><td>{h(d['last_seen'] or '-')}</td></tr>
+  </table>
+</div>
+"""
+            return shell("Device", inventory_body, "Devices")
         empty_body = f"{topbar('Device')}{time_picker()}<div class='panel'>No data for {h(ip)} in this period.</div>"
         return shell("Device", empty_body, "Devices")
 
@@ -4007,6 +4067,100 @@ def adguard_action():
     return redirect("/adguard")
 
 
+def unifi_client_endpoint(config):
+    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
+    if not base or not site_id:
+        return ""
+    return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=1"
+
+
+def check_unifi_connection(config):
+    if not config.get("unifi_enabled"):
+        return False, "UniFi integration is disabled."
+    endpoint = unifi_client_endpoint(config)
+    api_key = str(config.get("unifi_api_key", "") or "").strip()
+    if not endpoint or not api_key:
+        return False, "Enter the Connector URL, site ID, and API key first."
+    try:
+        result = requests.get(
+            endpoint,
+            headers={"Accept": "application/json", "X-API-Key": api_key},
+            timeout=12,
+        )
+        if result.status_code == 200:
+            payload = result.json()
+            count = payload.get("totalCount", payload.get("count", 0)) if isinstance(payload, dict) else 0
+            return True, f"Connected. UniFi reports {int(count or 0)} connected client(s)."
+        return False, f"UniFi API returned HTTP {result.status_code}."
+    except Exception as error:
+        return False, f"UniFi connection failed: {error}"
+
+
+@app.route("/integrations", methods=["GET", "POST"])
+def integrations():
+    c = cfg()
+    notice = ""
+    notice_class = "setup-ok"
+    if request.method == "POST":
+        c["unifi_enabled"] = request.form.get("unifi_enabled") == "1"
+        c["unifi_connector_url"] = request.form.get("unifi_connector_url", "").strip()
+        c["unifi_site_id"] = request.form.get("unifi_site_id", "").strip()
+        api_key = request.form.get("unifi_api_key", "")
+        if api_key:
+            c["unifi_api_key"] = api_key
+        if request.form.get("clear_unifi_key") == "1":
+            c["unifi_api_key"] = ""
+        try:
+            c["scheduled_speedtests_per_day"] = min(5, max(0, int(request.form.get("scheduled_speedtests_per_day", "0"))))
+        except ValueError:
+            c["scheduled_speedtests_per_day"] = 0
+        save_cfg(c)
+        restart_collector_service()
+        if request.form.get("action") == "test_unifi":
+            ok, notice = check_unifi_connection(c)
+            notice_class = "setup-ok" if ok else "setup-warning"
+        else:
+            notice = "Integration options saved. The collector has restarted."
+
+    enabled_checked = " checked" if c.get("unifi_enabled") else ""
+    schedule_options = "".join(
+        f'<option value="{number}"{" selected" if int(c.get("scheduled_speedtests_per_day", 0) or 0) == number else ""}>{number if number else "Off"}</option>'
+        for number in range(0, 6)
+    )
+    notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
+    body = f"""
+{topbar('Integrations')}
+{notice_html}
+<div class="panel settings">
+  <h2>UniFi Device Discovery (Optional)</h2>
+  <p>Enable this only if you own a UniFi console. It imports connected client names, IP addresses and MAC addresses so Devices can include UniFi clients even when their traffic does not cross NetSpecter.</p>
+  <form method="post">
+    {csrf_input()}
+    <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
+    <label>UniFi Connector URL</label>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/proxy/network/integration">
+    <small>Use the Network API connector URL for your console, without the site or clients part.</small>
+    <label>UniFi Site ID</label>
+    <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
+    <label>UniFi API Key</label>
+    <input name="unifi_api_key" type="password" placeholder="Leave blank to keep saved API key">
+    <small>The API key is encrypted in NetSpecter's local config and is never written to GitHub.</small>
+    <label><input type="checkbox" name="clear_unifi_key" value="1" style="width:auto"> Clear saved UniFi API key</label>
+
+    <h2 style="margin-top:28px;">Speed Test History (Optional)</h2>
+    <p>Manual speed tests are always stored. Scheduled tests consume internet data, so automatic runs are off unless you enable them here.</p>
+    <label>Automatic Speed Tests Per Day</label>
+    <select name="scheduled_speedtests_per_day">{schedule_options}</select>
+    <small>Select up to 5 tests per day, spread across daytime and evening hours.</small>
+    <button type="submit" name="action" value="save">Save Options</button>
+    <button type="submit" name="action" value="test_unifi">Save and Test UniFi</button>
+  </form>
+</div>
+"""
+    return shell("Integrations", body, "Integrations")
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     c = cfg()
@@ -4083,7 +4237,7 @@ def settings():
     fields = ""
     for key in ordered_keys:
         val = c[key]
-        if key in ["app_name", "tagline", "admin_password_hash"]:
+        if key in ["app_name", "tagline", "admin_password_hash"] or key in INTEGRATION_SETTINGS_KEYS:
             continue
         typ = "password" if "pass" in key else "text"
         display_val = "" if key in SENSITIVE_CONFIG_KEYS else ", ".join(val) if isinstance(val, list) else val
@@ -4114,9 +4268,19 @@ def settings():
     return shell("Settings", body, "Settings")
 
 
-@app.route("/speed-test", methods=["POST"])
-def speed_test():
-    """Run an administrator-triggered speed test; never consumes bandwidth automatically."""
+def parse_speedtest_metrics(output):
+    def value(pattern):
+        match = re.search(pattern, output or "", re.IGNORECASE)
+        return float(match.group(1)) if match else None
+    return (
+        value(r"Latency:\s*([0-9.]+)\s*ms"),
+        value(r"Download:\s*([0-9.]+)\s*Mbps"),
+        value(r"Upload:\s*([0-9.]+)\s*Mbps"),
+    )
+
+
+def run_and_store_speedtest(source="manual"):
+    success = False
     try:
         speedtest_env = os.environ.copy()
         speedtest_env.setdefault("HOME", "/root")
@@ -4134,23 +4298,111 @@ def speed_test():
         output = (result.stdout or "").strip() or "Speed test returned no output."
         if result.returncode != 0:
             output = f"Speed test failed (exit {result.returncode}).\n{output}"
+        else:
+            success = True
     except FileNotFoundError:
         output = "The official Ookla speedtest client is not installed. Re-run the NetSpecter installer to install it."
     except subprocess.TimeoutExpired:
         output = "Speed test timed out after 120 seconds."
     except Exception as error:
         output = f"Speed test could not run: {error}"
+    latency, download, upload = parse_speedtest_metrics(output)
+    run_sql(
+        """
+        INSERT INTO speed_tests (ts, source, latency_ms, download_mbps, upload_mbps, result_text, success)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), source, latency, download, upload, output, 1 if success else 0),
+    )
+    return output
+
+
+@app.route("/speed-test", methods=["POST"])
+def speed_test():
+    """Run an administrator-triggered speed test and store its result."""
+    run_and_store_speedtest("manual")
+    return redirect("/speed-tests?ran=1")
+
+
+@app.route("/speed-tests")
+def speed_tests():
+    rows = query(
+        """
+        SELECT ts, source, latency_ms, download_mbps, upload_mbps, result_text, success
+        FROM speed_tests
+        ORDER BY ts DESC
+        LIMIT 100
+        """
+    )
+    recent = list(reversed(rows[:30]))
+    chart_labels = json.dumps([r["ts"][5:16] for r in recent])
+    chart_download = json.dumps([r["download_mbps"] for r in recent])
+    chart_upload = json.dumps([r["upload_mbps"] for r in recent])
+    latest = rows[0] if rows else None
+    schedule_count = int(cfg().get("scheduled_speedtests_per_day", 0) or 0)
+    table = ""
+    for r in rows[:30]:
+        latency_text = f"{r['latency_ms']:.2f} ms" if r["latency_ms"] is not None else "-"
+        download_text = f"{r['download_mbps']:.2f} Mbps" if r["download_mbps"] is not None else "-"
+        upload_text = f"{r['upload_mbps']:.2f} Mbps" if r["upload_mbps"] is not None else "-"
+        table += f"""
+<tr>
+  <td>{h(r['ts'])}</td>
+  <td>{h(str(r['source']).title())}</td>
+  <td>{h(latency_text)}</td>
+  <td>{h(download_text)}</td>
+  <td>{h(upload_text)}</td>
+  <td><span class="{'green' if r['success'] else 'red'}">{'OK' if r['success'] else 'Failed'}</span></td>
+</tr>
+"""
+    latest_download = f"{latest['download_mbps']:.2f} Mbps" if latest and latest["download_mbps"] is not None else "-"
+    latest_upload = f"{latest['upload_mbps']:.2f} Mbps" if latest and latest["upload_mbps"] is not None else "-"
+    latest_latency = f"{latest['latency_ms']:.2f} ms" if latest and latest["latency_ms"] is not None else "-"
+    notice = '<div class="setup-ok">Speed test completed and saved.</div>' if request.args.get("ran") == "1" else ""
 
     body = f"""
-{topbar('Speed Test')}
-<div class="panel">
-  <h2>Internet Speed Test</h2>
-  <p>This test runs only when requested and transfers data over your internet connection.</p>
-  <pre>{h(output)}</pre>
-  <p><a href="/">Back to Dashboard</a></p>
+{topbar('Speed Test History')}
+{notice}
+<div class="grid">
+  <div class="card"><div class="label">Latest Download</div><span class="big blue">{h(latest_download)}</span></div>
+  <div class="card"><div class="label">Latest Upload</div><span class="big purple">{h(latest_upload)}</span></div>
+  <div class="card"><div class="label">Latest Latency</div><span class="big teal">{h(latest_latency)}</span></div>
+  <div class="card"><div class="label">Automatic Tests</div><span class="big {'green' if schedule_count else 'yellow'}">{schedule_count if schedule_count else 'Off'}</span><small>{'per day' if schedule_count else 'Enable in Integrations'}</small></div>
 </div>
+<div class="panel">
+  <h2>Internet Speed History</h2>
+  <p>Tests transfer data over your internet connection. Automatic tests are optional and configured under <a href="/integrations">Integrations</a>.</p>
+  <form method="post" action="/speed-test">
+    {csrf_input()}
+    <button type="submit">Run Speed Test Now</button>
+  </form>
+  <canvas id="speedHistoryChart" height="88"></canvas>
+</div>
+<div class="panel">
+  <h2>Recent Results</h2>
+  <table>
+    <tr><th>Time</th><th>Source</th><th>Latency</th><th>Download</th><th>Upload</th><th>Status</th></tr>
+    {table or '<tr><td colspan="6">No saved speed tests yet.</td></tr>'}
+  </table>
+</div>
+<script>
+const speedCtx = document.getElementById('speedHistoryChart');
+if (speedCtx) {{
+  new Chart(speedCtx, {{
+    type: 'line',
+    data: {{
+      labels: {chart_labels},
+      datasets: [
+        {{label: 'Download Mbps', data: {chart_download}, borderColor: '#5ba8ff', tension: .25}},
+        {{label: 'Upload Mbps', data: {chart_upload}, borderColor: '#a68bff', tension: .25}}
+      ]
+    }},
+    options: {{responsive:true, plugins:{{legend:{{labels:{{color:'#d7e6f5'}}}}}}, scales:{{x:{{ticks:{{color:'#9aa7bb'}}}}, y:{{ticks:{{color:'#9aa7bb'}}}}}}}}
+  }});
+}}
+</script>
 """
-    return shell("Speed Test", body, "Dashboard")
+    return shell("Speed Test History", body, "Speed Tests")
 
 
 @app.route("/system")

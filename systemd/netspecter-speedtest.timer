@@ -1,0 +1,10 @@
+[Unit]
+Description=Check NetSpecter Speed Test Schedule
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=netspecter-speedtest.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=NetSpecter Scheduled Internet Speed Test
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/netspecter/venv/bin/python /opt/netspecter/scheduled_speedtest.py

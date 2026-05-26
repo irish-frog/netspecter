@@ -33,6 +33,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -71,7 +72,7 @@ SYSTEM_OUI_PATH = Path("/usr/share/ieee-data/oui.txt")
 SECRET_KEY_PATH = CONFIG_DIR / "secret.key"
 COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
 collector_lock_handle = None
 
 
@@ -106,6 +107,10 @@ DEFAULT_CONFIG = {
     "adguard_user": "admin",
     "adguard_pass": "",
     "adguard_querylog_interval_seconds": 15,
+    "unifi_enabled": False,
+    "unifi_connector_url": "",
+    "unifi_site_id": "",
+    "unifi_api_key": "",
 }
 
 
@@ -117,6 +122,7 @@ imported_dns_keys = set()
 adguard_client_names = {}
 adguard_client_names_lock = threading.Lock()
 adguard_client_names_refreshed_at = 0.0
+unifi_clients_refreshed_at = 0.0
 NFT_FAMILY = "bridge"
 NFT_TABLE = "netspecter"
 NFT_CHAIN = "forward"
@@ -130,6 +136,7 @@ oui_vendor_cache = None
 GEOLOCATION_URL = "https://ipwho.is/"
 GEOLOCATION_REFRESH_SECONDS = 3600
 ADGUARD_CLIENT_REFRESH_SECONDS = 300
+UNIFI_CLIENT_REFRESH_SECONDS = 300
 MONITORED_APP_DOMAIN_KEYS = {
     "YouTube": ("googlevideo.com",),
     "Netflix": ("nflxvideo.net", "netflix.com"),
@@ -346,6 +353,77 @@ def remember_adguard_client_activity(client, ts):
         """,
         (ip, name, ts, ts),
     )
+
+
+def refresh_unifi_clients(config):
+    """Optionally import connected client inventory through the official UniFi API."""
+    global unifi_clients_refreshed_at
+    if not config.get("unifi_enabled"):
+        return
+    now_monotonic = time.monotonic()
+    if now_monotonic - unifi_clients_refreshed_at < UNIFI_CLIENT_REFRESH_SECONDS:
+        return
+
+    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
+    api_key = str(config.get("unifi_api_key", "") or "").strip()
+    if not base or not site_id or not api_key:
+        return
+
+    imported = 0
+    offset = 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        while True:
+            response = requests.get(
+                f"{base}/v1/sites/{site_id}/clients",
+                params={"offset": offset, "limit": 100},
+                headers={"Accept": "application/json", "X-API-Key": api_key},
+                timeout=12,
+            )
+            if response.status_code != 200:
+                print(f"UniFi client import failed: HTTP {response.status_code}")
+                return
+            payload = response.json()
+            clients = payload.get("data", []) if isinstance(payload, dict) else []
+            if not isinstance(clients, list):
+                return
+            for client in clients:
+                if not isinstance(client, dict):
+                    continue
+                ip = ip_identifier(client.get("ipAddress"))
+                if not ip:
+                    continue
+                name = str(client.get("name") or ip).strip()
+                mac = str(client.get("macAddress") or "").strip().upper()
+                vendor = vendor_from_mac(mac)
+                dtype = classify_device(vendor)
+                connected = parse_adguard_time(client.get("connectedAt")) if client.get("connectedAt") else now
+                run_sql(
+                    """
+                    INSERT INTO devices (ip, name, mac, vendor, device_type, status, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, 'Active', ?, ?)
+                    ON CONFLICT(ip) DO UPDATE SET
+                        name=CASE WHEN excluded.name != excluded.ip THEN excluded.name ELSE devices.name END,
+                        mac=CASE WHEN excluded.mac != '' THEN excluded.mac ELSE devices.mac END,
+                        vendor=CASE WHEN excluded.mac != '' THEN excluded.vendor ELSE devices.vendor END,
+                        device_type=CASE
+                            WHEN devices.device_type IS NULL OR devices.device_type='' OR devices.device_type='Unknown'
+                            THEN excluded.device_type ELSE devices.device_type END,
+                        last_seen=excluded.last_seen
+                    """,
+                    (ip, name, mac, vendor, dtype, connected, now),
+                )
+                imported += 1
+            count = int(payload.get("count", len(clients)) or 0)
+            total = int(payload.get("totalCount", count) or count)
+            offset += count
+            if not clients or offset >= total:
+                break
+        unifi_clients_refreshed_at = now_monotonic
+        print(f"UniFi connected clients imported: {imported}")
+    except Exception as e:
+        print(f"UniFi client import failed: {e}")
 
 
 def connect_db():
@@ -1382,6 +1460,7 @@ def adguard_querylog_loop():
 
         try:
             refresh_adguard_client_names(c)
+            refresh_unifi_clients(c)
             import_adguard_querylog()
             update_one_remote_location()
         except Exception as e:
