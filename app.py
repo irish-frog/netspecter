@@ -4075,6 +4075,37 @@ def unifi_client_endpoint(config):
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=1"
 
 
+def find_unifi_site(config):
+    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    api_key = str(config.get("unifi_api_key", "") or "").strip()
+    if not base or not api_key:
+        return False, "Enter the Connector URL and API key first."
+    try:
+        result = requests.get(
+            f"{base}/v1/sites",
+            params={"offset": 0, "limit": 100},
+            headers={"Accept": "application/json", "X-API-Key": api_key},
+            timeout=12,
+        )
+        if result.status_code != 200:
+            return False, f"UniFi API returned HTTP {result.status_code}. Check the API key."
+        payload = result.json()
+        sites = payload.get("data", []) if isinstance(payload, dict) else []
+        if not sites:
+            return False, "UniFi connected, but it returned no Network sites."
+        preferred = next(
+            (site for site in sites if str(site.get("name", "")).strip().lower() == "default"),
+            sites[0] if len(sites) == 1 else None,
+        )
+        if not preferred or not preferred.get("id"):
+            names = ", ".join(str(site.get("name", "Unnamed")) for site in sites)
+            return False, f"Multiple sites found ({names}). Select the correct site ID manually."
+        config["unifi_site_id"] = str(preferred["id"]).strip()
+        return True, f"Found UniFi site: {preferred.get('name', 'Default')}. Site ID saved."
+    except Exception as error:
+        return False, f"UniFi site lookup failed: {error}"
+
+
 def check_unifi_connection(config):
     if not config.get("unifi_enabled"):
         return False, "UniFi integration is disabled."
@@ -4117,7 +4148,14 @@ def integrations():
             c["scheduled_speedtests_per_day"] = 0
         save_cfg(c)
         restart_collector_service()
-        if request.form.get("action") == "test_unifi":
+        action = request.form.get("action")
+        if action == "find_unifi_site":
+            ok, notice = find_unifi_site(c)
+            if ok:
+                save_cfg(c)
+                restart_collector_service()
+            notice_class = "setup-ok" if ok else "setup-warning"
+        elif action == "test_unifi":
             ok, notice = check_unifi_connection(c)
             notice_class = "setup-ok" if ok else "setup-warning"
         else:
@@ -4143,6 +4181,7 @@ def integrations():
     <small>Use the Network API connector URL for your console, without the site or clients part.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
+    <small>Leave this blank and use Find Site Automatically after entering your API key.</small>
     <label>UniFi API Key</label>
     <input name="unifi_api_key" type="password" placeholder="Leave blank to keep saved API key">
     <small>The API key is encrypted in NetSpecter's local config and is never written to GitHub.</small>
@@ -4154,6 +4193,7 @@ def integrations():
     <select name="scheduled_speedtests_per_day">{schedule_options}</select>
     <small>Select up to 5 tests per day, spread across daytime and evening hours.</small>
     <button type="submit" name="action" value="save">Save Options</button>
+    <button type="submit" name="action" value="find_unifi_site">Find Site Automatically</button>
     <button type="submit" name="action" value="test_unifi">Save and Test UniFi</button>
   </form>
 </div>

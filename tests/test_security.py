@@ -209,6 +209,8 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("/integrations", rules)
         self.assertIn("/speed-tests", rules)
+        self.assertIn("def find_unifi_site(config):", source)
+        self.assertIn("Find Site Automatically", source)
         self.assertIn("refresh_unifi_clients", collector)
         self.assertIn('"X-API-Key": api_key', collector)
         self.assertIn("UNIFI_CLIENT_REFRESH_SECONDS = 300", collector)
