@@ -95,6 +95,18 @@ collector_lock_handle = None
 
 DEFAULT_CONFIG = {
     "lan_prefix": "192.168.1.",
+    "vlan1_name": "",
+    "vlan1_subnet": "",
+    "vlan1_gateway_ip": "",
+    "vlan2_name": "",
+    "vlan2_subnet": "",
+    "vlan2_gateway_ip": "",
+    "vlan3_name": "",
+    "vlan3_subnet": "",
+    "vlan3_gateway_ip": "",
+    "vlan4_name": "",
+    "vlan4_subnet": "",
+    "vlan4_gateway_ip": "",
     "packet_iface": "br0",
     "collect_interval_seconds": 2,
     "traffic_retention_days": 30,
@@ -229,12 +241,55 @@ def default_gateway_from_prefix(prefix):
     return ""
 
 
+def parse_ipv4_network(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("."):
+        text = f"{text}0/24"
+    elif "/" not in text:
+        text = f"{text}/24"
+    network = ipaddress.ip_network(text, strict=False)
+    if network.version != 4:
+        raise ValueError("Monitored networks must identify IPv4 networks")
+    if network.num_addresses > 1024:
+        raise ValueError("Monitored networks are too large; use a /22 or smaller network")
+    return network
+
+
+def monitored_networks(config=None):
+    c = config or cfg()
+    networks = []
+    primary = parse_ipv4_network(c.get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]))
+    if primary:
+        networks.append(primary)
+    for number in range(1, 5):
+        try:
+            network = parse_ipv4_network(c.get(f"vlan{number}_subnet", ""))
+        except ValueError as e:
+            print(f"Ignoring invalid VLAN {number} subnet: {e}")
+            continue
+        if network and network not in networks:
+            networks.append(network)
+    return tuple(networks)
+
+
 def ignored_ips(config=None):
     c = config or cfg()
     ips = cfg_list(c.get("ignore_ips", []))
     gateway = str(c.get("gateway_ip", "") or "").strip() or default_gateway_from_prefix(c.get("lan_prefix"))
     if gateway and gateway not in ips:
         ips.insert(0, gateway)
+    for number in range(1, 5):
+        try:
+            network = parse_ipv4_network(c.get(f"vlan{number}_subnet", ""))
+        except ValueError:
+            continue
+        if not network:
+            continue
+        gateway = str(c.get(f"vlan{number}_gateway_ip", "") or "").strip() or str(next(network.hosts(), ""))
+        if gateway and gateway not in ips:
+            ips.insert(0, gateway)
     return set(ips)
 
 
@@ -831,18 +886,8 @@ def prune_history(config=None):
 
 
 def lan_network(config=None):
-    """Convert the LAN prefix setting into the IPv4 subnet counted by nftables."""
-    text = str((config or cfg()).get("lan_prefix", DEFAULT_CONFIG["lan_prefix"]) or "").strip()
-    if text.endswith("."):
-        text = f"{text}0/24"
-    elif "/" not in text:
-        text = f"{text}/24"
-    network = ipaddress.ip_network(text, strict=False)
-    if network.version != 4:
-        raise ValueError("LAN Prefix must identify an IPv4 network")
-    if network.num_addresses > 1024:
-        raise ValueError("LAN Prefix is too large; use a /22 or smaller network")
-    return network
+    """Return the primary LAN for legacy call sites."""
+    return monitored_networks(config)[0]
 
 
 def monitored_app_for_domain(domain):
@@ -863,8 +908,8 @@ def remember_estimated_app_targets(config, client, domain, answers, observed_at=
         return
     try:
         client_ip = ipaddress.ip_address(str(client or "").strip())
-        network = lan_network(config)
-        if client_ip.version != 4 or client_ip not in network:
+        networks = monitored_networks(config)
+        if client_ip.version != 4 or not any(client_ip in network for network in networks):
             return
     except ValueError:
         return
@@ -881,7 +926,7 @@ def remember_estimated_app_targets(config, client, domain, answers, observed_at=
             destination = ipaddress.ip_address(str(answer.get("value") or "").strip())
         except ValueError:
             continue
-        if destination.version != 4 or destination.is_unspecified or destination in network:
+        if destination.version != 4 or destination.is_unspecified or any(destination in network for network in networks):
             continue
         ttl = positive_int(answer.get("ttl", 900), 900, 1)
         expires = observed_epoch + min(max(ttl, 900), 21600)
@@ -971,7 +1016,7 @@ def nft_signature(config=None):
     c = config or cfg()
     return (
         str(c.get("packet_iface") or "br0"),
-        str(lan_network(c)),
+        tuple(str(network) for network in monitored_networks(c)),
         tuple(sorted(ignored_ips(c))),
         active_estimated_app_targets(),
     )
@@ -982,10 +1027,12 @@ def install_nft_counters(config=None):
     global nft_config_signature, nft_previous_counters, nft_previous_estimated_counters, nft_active_ips
     c = config or cfg()
     signature = nft_signature(c)
-    interface, network_text, ignored, app_targets = signature
-    network = ipaddress.ip_network(network_text)
+    interface, network_texts, ignored, app_targets = signature
+    networks = tuple(ipaddress.ip_network(text) for text in network_texts)
     ignored_set = set(ignored)
-    hosts = [str(ip) for ip in network.hosts() if str(ip) not in ignored_set]
+    hosts = [str(ip) for network in networks for ip in network.hosts() if str(ip) not in ignored_set]
+    outside_networks = " ".join(f"ip daddr != {network}" for network in networks)
+    from_outside_networks = " ".join(f"ip saddr != {network}" for network in networks)
 
     subprocess.run(
         ["nft", "delete", "table", NFT_FAMILY, NFT_TABLE],
@@ -1001,10 +1048,10 @@ def install_nft_counters(config=None):
     ]
     for ip in hosts:
         lines.append(
-            f'    ip saddr {ip} ip daddr != {network} counter comment "netspecter:tx:{ip}"'
+            f'    ip saddr {ip} {outside_networks} counter comment "netspecter:tx:{ip}"'
         )
         lines.append(
-            f'    ip daddr {ip} ip saddr != {network} counter comment "netspecter:rx:{ip}"'
+            f'    ip daddr {ip} {from_outside_networks} counter comment "netspecter:rx:{ip}"'
         )
     for category, client, destination in app_targets:
         lines.append(
@@ -1030,7 +1077,7 @@ def install_nft_counters(config=None):
     nft_previous_estimated_counters = {}
     nft_active_ips = set()
     print(
-        f"nftables traffic counters installed for {network_text} on bridge traffic ({interface}); "
+        f"nftables traffic counters installed for {', '.join(network_texts)} on bridge traffic ({interface}); "
         f"{len(app_targets)} monitored app attribution target(s)"
     )
 
