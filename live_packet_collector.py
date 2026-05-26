@@ -355,6 +355,22 @@ def remember_adguard_client_activity(client, ts):
     )
 
 
+def unifi_connector_bases(config):
+    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    if not base:
+        return []
+    bases = [base]
+    if "/proxy/network/integration" in base:
+        alternate = base.replace("/proxy/network/integration", "/network/integration", 1)
+    elif "/network/integration" in base:
+        alternate = base.replace("/network/integration", "/proxy/network/integration", 1)
+    else:
+        alternate = ""
+    if alternate and alternate not in bases:
+        bases.append(alternate)
+    return bases
+
+
 def refresh_unifi_clients(config):
     """Optionally import connected client inventory through the official UniFi API."""
     global unifi_clients_refreshed_at
@@ -364,30 +380,38 @@ def refresh_unifi_clients(config):
     if now_monotonic - unifi_clients_refreshed_at < UNIFI_CLIENT_REFRESH_SECONDS:
         return
 
-    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    bases = unifi_connector_bases(config)
     site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
     api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not base or not site_id or not api_key:
+    if not bases or not site_id or not api_key:
         return
 
     imported = 0
     offset = 0
+    working_base = None
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         while True:
-            response = requests.get(
-                f"{base}/v1/sites/{site_id}/clients",
-                params={"offset": offset, "limit": 100},
-                headers={"Accept": "application/json", "X-API-Key": api_key},
-                timeout=12,
-            )
-            if response.status_code != 200:
-                print(f"UniFi client import failed: HTTP {response.status_code}")
-                return
-            try:
-                payload = response.json()
-            except ValueError:
-                print("UniFi client import failed: response was not JSON")
+            payload = None
+            failure = ""
+            for base in ([working_base] if working_base else bases):
+                response = requests.get(
+                    f"{base}/v1/sites/{site_id}/clients",
+                    params={"offset": offset, "limit": 100},
+                    headers={"Accept": "application/json", "X-API-Key": api_key},
+                    timeout=12,
+                )
+                if response.status_code != 200:
+                    failure = f"HTTP {response.status_code}"
+                    continue
+                try:
+                    payload = response.json()
+                    working_base = base
+                    break
+                except ValueError:
+                    failure = "response was not JSON"
+            if payload is None:
+                print(f"UniFi client import failed: {failure}")
                 return
             clients = payload.get("data", []) if isinstance(payload, dict) else []
             if not isinstance(clients, list):

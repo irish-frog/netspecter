@@ -4067,8 +4067,24 @@ def adguard_action():
     return redirect("/adguard")
 
 
-def unifi_client_endpoint(config):
+def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    if not base:
+        return []
+    bases = [base]
+    if "/proxy/network/integration" in base:
+        alternate = base.replace("/proxy/network/integration", "/network/integration", 1)
+    elif "/network/integration" in base:
+        alternate = base.replace("/network/integration", "/proxy/network/integration", 1)
+    else:
+        alternate = ""
+    if alternate and alternate not in bases:
+        bases.append(alternate)
+    return bases
+
+
+def unifi_client_endpoint(config, base=None):
+    base = base or str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
     if not base or not site_id:
         return ""
@@ -4087,34 +4103,42 @@ def unifi_json_response(result):
 
 
 def find_unifi_site(config):
-    base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
+    bases = unifi_connector_bases(config)
     api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not base or not api_key:
+    if not bases or not api_key:
         return False, "Enter the Connector URL and API key first."
     try:
-        result = requests.get(
-            f"{base}/v1/sites",
-            params={"offset": 0, "limit": 100},
-            headers={"Accept": "application/json", "X-API-Key": api_key},
-            timeout=12,
-        )
-        if result.status_code != 200:
-            return False, f"UniFi API returned HTTP {result.status_code}. Check the API key."
-        payload, response_error = unifi_json_response(result)
-        if response_error:
-            return False, response_error
-        sites = payload.get("data", []) if isinstance(payload, dict) else []
-        if not sites:
-            return False, "UniFi connected, but it returned no Network sites."
-        preferred = next(
-            (site for site in sites if str(site.get("name", "")).strip().lower() == "default"),
-            sites[0] if len(sites) == 1 else None,
-        )
-        if not preferred or not preferred.get("id"):
-            names = ", ".join(str(site.get("name", "Unnamed")) for site in sites)
-            return False, f"Multiple sites found ({names}). Select the correct site ID manually."
-        config["unifi_site_id"] = str(preferred["id"]).strip()
-        return True, f"Found UniFi site: {preferred.get('name', 'Default')}. Site ID saved."
+        failure = ""
+        for base in bases:
+            result = requests.get(
+                f"{base}/v1/sites",
+                params={"offset": 0, "limit": 100},
+                headers={"Accept": "application/json", "X-API-Key": api_key},
+                timeout=12,
+            )
+            if result.status_code != 200:
+                failure = f"UniFi API returned HTTP {result.status_code}. Check the API key."
+                continue
+            payload, response_error = unifi_json_response(result)
+            if response_error:
+                failure = response_error
+                continue
+            sites = payload.get("data", []) if isinstance(payload, dict) else []
+            if not sites:
+                return False, "UniFi connected, but it returned no Network sites."
+            preferred = next(
+                (site for site in sites if str(site.get("name", "")).strip().lower() == "default"),
+                sites[0] if len(sites) == 1 else None,
+            )
+            if not preferred or not preferred.get("id"):
+                names = ", ".join(str(site.get("name", "Unnamed")) for site in sites)
+                return False, f"Multiple sites found ({names}). Select the correct site ID manually."
+            changed_url = base != bases[0]
+            config["unifi_connector_url"] = base
+            config["unifi_site_id"] = str(preferred["id"]).strip()
+            adjusted = " Connector URL corrected automatically." if changed_url else ""
+            return True, f"Found UniFi site: {preferred.get('name', 'Default')}. Site ID saved.{adjusted}"
+        return False, failure or "UniFi site lookup did not return a usable response."
     except Exception as error:
         return False, f"UniFi site lookup failed: {error}"
 
@@ -4122,23 +4146,28 @@ def find_unifi_site(config):
 def check_unifi_connection(config):
     if not config.get("unifi_enabled"):
         return False, "UniFi integration is disabled."
-    endpoint = unifi_client_endpoint(config)
+    bases = unifi_connector_bases(config)
     api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not endpoint or not api_key:
+    if not bases or not config.get("unifi_site_id") or not api_key:
         return False, "Enter the Connector URL, site ID, and API key first."
     try:
-        result = requests.get(
-            endpoint,
-            headers={"Accept": "application/json", "X-API-Key": api_key},
-            timeout=12,
-        )
-        if result.status_code == 200:
+        failure = ""
+        for base in bases:
+            result = requests.get(
+                unifi_client_endpoint(config, base),
+                headers={"Accept": "application/json", "X-API-Key": api_key},
+                timeout=12,
+            )
+            if result.status_code != 200:
+                failure = f"UniFi API returned HTTP {result.status_code}."
+                continue
             payload, response_error = unifi_json_response(result)
             if response_error:
-                return False, response_error
+                failure = response_error
+                continue
             count = payload.get("totalCount", payload.get("count", 0)) if isinstance(payload, dict) else 0
             return True, f"Connected. UniFi reports {int(count or 0)} connected client(s)."
-        return False, f"UniFi API returned HTTP {result.status_code}."
+        return False, failure or "UniFi connection did not return a usable response."
     except Exception as error:
         return False, f"UniFi connection failed: {error}"
 
@@ -4192,8 +4221,8 @@ def integrations():
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
     <label>UniFi Connector URL</label>
-    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/proxy/network/integration">
-    <small>Use the Network API connector URL for your console, without the site or clients part.</small>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/network/integration">
+    <small>Use the Network API connector URL for your console, without the site or clients part. NetSpecter will correct either UniFi connector URL form automatically.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
     <small>Leave this blank and use Find Site Automatically after entering your API key.</small>
