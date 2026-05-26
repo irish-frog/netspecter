@@ -49,10 +49,10 @@ if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok in
   curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
 fi
 apt remove -y speedtest-cli >/dev/null 2>&1 || true
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data speedtest
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data speedtest openvpn
 
 echo "[4/9] Creating folders..."
-mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$DATA_DIR"
+mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$CONFIG_DIR/vpn" "$DATA_DIR"
 
 echo "[5/9] Copying NetSpecter files..."
 # A collector started outside systemd, or from an older build without locking,
@@ -84,10 +84,12 @@ echo "[7/9] Preparing database and permissions..."
 touch "$DATA_DIR/netspecter.db"
 chown -R root:root "$INSTALL_DIR" "$CONFIG_DIR" "$DATA_DIR"
 chmod 700 "$CONFIG_DIR" "$CONFIG_DIR/adguard" "$DATA_DIR"
+chmod 700 "$CONFIG_DIR/vpn"
 chmod 600 "$CONFIG_DIR/config.json" "$DATA_DIR/netspecter.db" "$DATA_DIR/cache.json" "$DATA_DIR/oui_cache.json"
 chmod +x "$INSTALL_DIR/live_packet_collector.py"
 chmod +x "$INSTALL_DIR/collector_watchdog.sh"
 chmod +x "$INSTALL_DIR/scripts/render-adguard-template.sh"
+chmod +x "$INSTALL_DIR/scripts/netspecter-openvpn-run.sh"
 
 echo "[8/9] Preparing AdGuard template..."
 "$INSTALL_DIR/scripts/render-adguard-template.sh" "$INSTALL_DIR/adguard/AdGuardHome.yaml.example" "$CONFIG_DIR/adguard/AdGuardHome.yaml.generated" || true
@@ -97,6 +99,7 @@ cp systemd/netspecter-web.service "$SERVICE_DIR/netspecter-web.service"
 cp systemd/netspecter-collector.service "$SERVICE_DIR/netspecter-collector.service"
 cp systemd/netspecter-watchdog.service "$SERVICE_DIR/netspecter-watchdog.service"
 cp systemd/netspecter-watchdog.timer "$SERVICE_DIR/netspecter-watchdog.timer"
+cp systemd/netspecter-openvpn.service "$SERVICE_DIR/netspecter-openvpn.service"
 systemctl daemon-reload
 systemctl enable netspecter-web netspecter-collector netspecter-watchdog.timer
 systemctl restart netspecter-web netspecter-collector
@@ -109,3 +112,4 @@ echo "=== NetSpecter installed ==="
 echo "Open: http://SERVER-IP:5050"
 echo "AdGuard template: $CONFIG_DIR/adguard/AdGuardHome.yaml.generated"
 echo "Check: systemctl status netspecter-web netspecter-collector"
+echo "OpenVPN: upload a profile in the NetSpecter VPN page before connecting."

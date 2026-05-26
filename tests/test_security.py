@@ -197,6 +197,24 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("dpkg-query -W -f='${Status}' speedtest", installer)
         self.assertIn("speedtest", installer)
 
+    def test_openvpn_is_manually_controlled_and_installed_without_routing(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        installer = (SOURCE_DIR / "install.sh").read_text()
+        runner = (SOURCE_DIR / "scripts" / "netspecter-openvpn-run.sh").read_text()
+        service = (SOURCE_DIR / "systemd" / "netspecter-openvpn.service").read_text()
+        rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
+        self.assertIn("/vpn", rules)
+        self.assertIn("/vpn/profile", rules)
+        self.assertIn("POST", rules["/vpn/profile"])
+        self.assertIn("/vpn/action", rules)
+        self.assertIn("POST", rules["/vpn/action"])
+        self.assertNotIn("GET", rules["/vpn/action"])
+        self.assertIn('"openvpn_password"', source)
+        self.assertIn("openvpn", installer)
+        self.assertIn("netspecter-openvpn.service", installer)
+        self.assertIn("--route-noexec", runner)
+        self.assertIn("ExecStart=/opt/netspecter/scripts/netspecter-openvpn-run.sh", service)
+
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()
         collector = (SOURCE_DIR / "live_packet_collector.py").read_text()
