@@ -2444,17 +2444,11 @@ def quick_detect_services(ip):
 @app.route("/device/<ip>")
 def device(ip):
     ensure_device_overrides_table()
+    start_day = range_start_day()
 
     rows = query(
         """
-        WITH latest_day AS (
-            SELECT day
-            FROM traffic_intervals
-            WHERE ip=?
-            ORDER BY id DESC
-            LIMIT 1
-        ),
-        usage AS (
+        WITH usage AS (
             SELECT
                 t.ip,
                 MAX(t.id) AS max_id,
@@ -2462,8 +2456,7 @@ def device(ip):
                 SUM(t.uploaded_mb) AS uploaded_mb,
                 SUM(t.total_mb) AS total_mb
             FROM traffic_intervals t
-            JOIN latest_day x ON x.day = t.day
-            WHERE t.ip=?
+            WHERE t.ip=? AND t.day >= ?
         )
         SELECT
             COALESCE(o.name, d.name, t.name, t.ip) AS display_name,
@@ -2489,11 +2482,12 @@ def device(ip):
         LEFT JOIN device_overrides o
             ON o.ip = t.ip
         """,
-        (ip, ip),
+        (ip, start_day),
     )
 
     if not rows:
-        return shell("Device", f"{topbar('Device')}<div class='panel'>No data for {h(ip)}</div>", "Devices")
+        empty_body = f"{topbar('Device')}{time_picker()}<div class='panel'>No data for {h(ip)} in this period.</div>"
+        return shell("Device", empty_body, "Devices")
 
     r = rows[0]
     device_name = r["display_name"] or ip
@@ -2516,12 +2510,12 @@ def device(ip):
         f"""
         SELECT domain, category, COUNT(*) AS total
         FROM dns_querylog
-        WHERE client IN ({placeholders})
+        WHERE client IN ({placeholders}) AND day >= ?
         GROUP BY domain, category
         ORDER BY total DESC
         LIMIT 60
         """,
-        tuple(client_keys),
+        tuple(client_keys) + (start_day,),
     )
 
     category_counts = {}
@@ -2597,6 +2591,8 @@ def device(ip):
     body = f"""
 {topbar(h(device_name))}
 <style>
+.device-range-controls {{ display:flex; align-items:center; margin-bottom:14px; }}
+.device-range-controls .time-picker {{ margin-left:8px; }}
 .device-hero {{ display:grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap:14px; margin-bottom:16px; }}
 .device-stat {{ padding:18px; border:1px solid rgba(0,190,255,.22); border-radius:14px; background:linear-gradient(145deg, rgba(6,22,36,.94), rgba(3,12,22,.96)); box-shadow:0 0 24px rgba(0,190,255,.04); }}
 .device-stat .label {{ color:#b7c8d9; font-size:13px; }}
@@ -2636,6 +2632,9 @@ def device(ip):
 }}
 </style>
 
+<div class="device-range-controls">
+  {time_picker()}
+</div>
 <div class="device-hero">
   <div class="device-stat"><div class="label">Download</div><span class="value blue">{fmt_mb(r['downloaded_mb'])}</span></div>
   <div class="device-stat"><div class="label">Upload</div><span class="value purple">{fmt_mb(r['uploaded_mb'])}</span></div>
@@ -3020,7 +3019,7 @@ def traffic():
     table = ""
     for r in rows:
         table += f"""
-<tr onclick="location.href='/device/{h(r['ip'])}'">
+<tr onclick="location.href='/device/{h(r['ip'])}?range={range_key()}'">
   <td>{h(r['name'])}</td>
   <td>{h(r['ip'])}</td>
   <td>{fmt_mb(r['downloaded_mb'])}</td>
