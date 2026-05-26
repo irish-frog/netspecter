@@ -243,6 +243,16 @@ class WebSecurityTests(unittest.TestCase):
         self.assertGreaterEqual(source.count('type: "bar"'), 2)
         self.assertIn("type: 'bar'", source)
 
+    def test_suricata_ids_alerts_page_is_read_only_and_available(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
+        self.assertIn("/ids-alerts", rules)
+        self.assertIn("GET", rules["/ids-alerts"])
+        self.assertNotIn("POST", rules["/ids-alerts"])
+        self.assertIn('("IDS Alerts", "/ids-alerts", "fa-shield-virus")', source)
+        self.assertIn("def recent_suricata_alerts(limit=300):", source)
+        self.assertIn("This view is read-only", source)
+
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()
         collector = (SOURCE_DIR / "live_packet_collector.py").read_text()

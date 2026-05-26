@@ -13,6 +13,7 @@ import io
 import secrets
 import re
 from functools import wraps
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -58,6 +59,7 @@ DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
 SECRET_KEY_PATH = CONFIG_ROOT / "secret.key"
 SESSION_KEY_PATH = CONFIG_ROOT / "session.key"
+SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
 
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
 
@@ -1488,6 +1490,7 @@ def shell(title, body, active="Dashboard"):
         ("Applications", "/applications", "fa-layer-group"),
         ("Blocked", "/blocked", "fa-ban"),
         ("Services", "/blocked-services", "fa-filter-circle-xmark"),
+        ("IDS Alerts", "/ids-alerts", "fa-shield-virus"),
         ("Map", "/map", "fa-diagram-project"),
         ("Exports", "/exports", "fa-file-export"),
         ("AdGuard", "/adguard", "fa-shield-halved"),
@@ -3752,6 +3755,97 @@ def blocked_services():
 </div>
 """
     return shell("Blocked Services", body, "Services")
+
+
+def recent_suricata_alerts(limit=300):
+    """Read a bounded recent sample from Suricata's fast alert log."""
+    if not SURICATA_FAST_LOG.exists():
+        return [], "Suricata alert log was not found."
+    try:
+        result = subprocess.run(
+            ["tail", "-n", str(limit), str(SURICATA_FAST_LOG)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=4,
+            check=False,
+        )
+        if result.returncode != 0:
+            return [], "Suricata alert log could not be read."
+    except Exception as error:
+        return [], f"Suricata alert log could not be read: {error}"
+
+    pattern = re.compile(
+        r"^(?P<ts>\S+)\s+\[\*\*\]\s+\[(?P<sid>[^\]]+)\]\s+"
+        r"(?P<signature>.*?)\s+\[\*\*\]\s+\[Classification:\s*(?P<classification>.*?)\]\s+"
+        r"\[Priority:\s*(?P<priority>\d+)\]\s+\{(?P<protocol>[^}]+)\}\s+"
+        r"(?P<source>\S+)\s+->\s+(?P<destination>\S+)$"
+    )
+    alerts = []
+    for line in reversed(result.stdout.splitlines()):
+        match = pattern.match(line.strip())
+        if match:
+            alerts.append(match.groupdict())
+    return alerts, ""
+
+
+@app.route("/ids-alerts")
+def ids_alerts():
+    alerts, error = recent_suricata_alerts()
+    priority_counts = Counter(alert["priority"] for alert in alerts)
+    signature_counts = Counter(alert["signature"] for alert in alerts)
+    signature_rows = ""
+    for signature, total in signature_counts.most_common(8):
+        signature_rows += f"<tr><td>{h(signature)}</td><td><b>{total:,}</b></td></tr>"
+
+    table = ""
+    for alert in alerts[:100]:
+        priority = int(alert["priority"] or 3)
+        level = "red" if priority == 1 else "yellow" if priority == 2 else "blue"
+        table += f"""
+<tr>
+  <td>{h(alert['ts'])}</td>
+  <td><span class="{level}"><b>P{priority}</b></span></td>
+  <td>{h(alert['signature'])}<br><small>{h(alert['classification'])}</small></td>
+  <td>{h(alert['protocol'])}</td>
+  <td class="mono">{h(alert['source'])}</td>
+  <td class="mono">{h(alert['destination'])}</td>
+</tr>
+"""
+
+    notice = f'<div class="setup-warning">{h(error)}</div>' if error else ""
+    body = f"""
+{topbar('IDS Alerts')}
+{notice}
+<div class="grid">
+  <div class="card"><div class="label">Recent Alert Sample</div><span class="big red">{len(alerts):,}</span><small>Latest log entries parsed</small></div>
+  <div class="card"><div class="label">Priority 1</div><span class="big red">{priority_counts.get('1', 0):,}</span><small>Highest concern</small></div>
+  <div class="card"><div class="label">Priority 2</div><span class="big yellow">{priority_counts.get('2', 0):,}</span><small>Review activity</small></div>
+  <div class="card"><div class="label">Priority 3</div><span class="big blue">{priority_counts.get('3', 0):,}</span><small>Informational</small></div>
+</div>
+<div class="panel">
+  <h2>Suricata IDS</h2>
+  <p>Suricata is detecting and logging network alerts. This view is read-only; NetSpecter is not blocking traffic from these alerts.</p>
+  <p class="sub">Showing up to 100 alerts from the latest 300 log entries. Repeated alerts are also the main source of Suricata disk growth.</p>
+</div>
+<div class="layout">
+  <div class="panel">
+    <h2>Recent Alerts</h2>
+    <table>
+      <tr><th>Time</th><th>Priority</th><th>Alert</th><th>Protocol</th><th>Source</th><th>Destination</th></tr>
+      {table or '<tr><td colspan="6">No recent Suricata alerts found.</td></tr>'}
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Noisiest Alerts</h2>
+    <table>
+      <tr><th>Signature</th><th>Count</th></tr>
+      {signature_rows or '<tr><td colspan="2">No alerts to summarise.</td></tr>'}
+    </table>
+  </div>
+</div>
+"""
+    return shell("IDS Alerts", body, "IDS Alerts")
 
 
 @app.route("/map")
