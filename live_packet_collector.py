@@ -384,7 +384,11 @@ def refresh_unifi_clients(config):
             if response.status_code != 200:
                 print(f"UniFi client import failed: HTTP {response.status_code}")
                 return
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError:
+                print("UniFi client import failed: response was not JSON")
+                return
             clients = payload.get("data", []) if isinstance(payload, dict) else []
             if not isinstance(clients, list):
                 return

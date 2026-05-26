@@ -4075,6 +4075,17 @@ def unifi_client_endpoint(config):
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=1"
 
 
+def unifi_json_response(result):
+    content_type = str(result.headers.get("Content-Type", "") or "").lower()
+    try:
+        return result.json(), ""
+    except ValueError:
+        detail = "UniFi returned an empty response." if not result.text.strip() else "UniFi returned a non-JSON response."
+        if "application/json" not in content_type:
+            detail += " Check that this console supports the Network API connector (UniFi OS firmware 5.0.3 or newer)."
+        return None, detail
+
+
 def find_unifi_site(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     api_key = str(config.get("unifi_api_key", "") or "").strip()
@@ -4089,7 +4100,9 @@ def find_unifi_site(config):
         )
         if result.status_code != 200:
             return False, f"UniFi API returned HTTP {result.status_code}. Check the API key."
-        payload = result.json()
+        payload, response_error = unifi_json_response(result)
+        if response_error:
+            return False, response_error
         sites = payload.get("data", []) if isinstance(payload, dict) else []
         if not sites:
             return False, "UniFi connected, but it returned no Network sites."
@@ -4120,7 +4133,9 @@ def check_unifi_connection(config):
             timeout=12,
         )
         if result.status_code == 200:
-            payload = result.json()
+            payload, response_error = unifi_json_response(result)
+            if response_error:
+                return False, response_error
             count = payload.get("totalCount", payload.get("count", 0)) if isinstance(payload, dict) else 0
             return True, f"Connected. UniFi reports {int(count or 0)} connected client(s)."
         return False, f"UniFi API returned HTTP {result.status_code}."
