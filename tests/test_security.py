@@ -229,6 +229,13 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("netspecter-speedtest.timer", installer)
         self.assertIn('if runs == 0:', schedule)
 
+    def test_common_pages_do_not_block_on_public_ip_and_devices_batch_live_speeds(self):
+        source = (SOURCE_DIR / "app.py").read_text()
+        self.assertIn("def public_ip(refresh=True):", source)
+        self.assertIn("Public IP: {public_ip(refresh=False)}", source)
+        self.assertIn("def live_all_host_speeds():", source)
+        self.assertIn("live_speeds = live_all_host_speeds()", source)
+
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()
         collector = (SOURCE_DIR / "live_packet_collector.py").read_text()

@@ -848,18 +848,27 @@ def cache_get(key, max_age):
     return item.get("value")
 
 
+def cache_value(key):
+    item = load_json(CACHE_PATH, {}).get(key)
+    return item.get("value") if isinstance(item, dict) else None
+
+
 def cache_set(key, value):
     data = load_json(CACHE_PATH, {})
     data[key] = {"ts": time.time(), "value": value}
     save_json(CACHE_PATH, data)
 
 
-def public_ip():
+def public_ip(refresh=True):
     c = cfg()
     cached = cache_get("public_ip", int(c.get("public_ip_cache_seconds", 1800)))
 
     if cached:
         return cached
+
+    stale = cache_value("public_ip")
+    if not refresh:
+        return stale or "Unknown"
 
     try:
         r = requests.get("https://api.ipify.org", timeout=5)
@@ -870,7 +879,7 @@ def public_ip():
     except Exception:
         pass
 
-    return "Unknown"
+    return stale or "Unknown"
 
 
 
@@ -1004,6 +1013,28 @@ def live_host_speed(ip_or_name):
         return packet
 
     return {"rx_bps": 0.0, "tx_bps": 0.0, "total_bps": 0.0, "source": "collector"}
+
+
+def live_all_host_speeds():
+    """Read live speed for all devices in one query for table rendering."""
+    freshness = f"-{live_sample_max_age()} seconds"
+    rows = query(
+        """
+        SELECT ip, rx_bps, tx_bps, total_bps
+        FROM live_device_speed
+        WHERE updated_at >= datetime('now', 'localtime', ?)
+        """,
+        (freshness,),
+    )
+    return {
+        str(row["ip"]): {
+            "rx_bps": float(row["rx_bps"] or 0) * 8,
+            "tx_bps": float(row["tx_bps"] or 0) * 8,
+            "total_bps": float(row["total_bps"] or 0) * 8,
+            "source": "packet",
+        }
+        for row in rows
+    }
 
 
 def live_network_speed():
@@ -1678,7 +1709,7 @@ def topbar(title="Dashboard"):
   </div>
   <div class="badges">
     <span>Observed IPv4 traffic</span>
-    <span>Public IP: {public_ip()}</span>
+    <span>Public IP: {public_ip(refresh=False)}</span>
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
     <span>LAN: {c.get('lan_prefix')}0/24</span>
@@ -2139,6 +2170,7 @@ def devices():
     status_options = ["Active", "Known", "Watch", "DNS Blocked", "Blocked", "OK"]
 
     table = ""
+    live_speeds = live_all_host_speeds()
 
     for r in rows:
         ip = h(r["ip"])
@@ -2170,7 +2202,7 @@ def devices():
             status_select += f'<option value="{h(opt)}"{selected}>{h(opt)}</option>'
         status_select += '</select>'
 
-        live_data = live_host_speed(str(r["ip"]))
+        live_data = live_speeds.get(str(r["ip"]), {"rx_bps": 0.0, "tx_bps": 0.0, "total_bps": 0.0})
         live_total = fmt_bits_as_bytes(live_data.get("total_bps", 0))
         live_rx = fmt_bits_as_bytes(live_data.get("rx_bps", 0))
         live_tx = fmt_bits_as_bytes(live_data.get("tx_bps", 0))
