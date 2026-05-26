@@ -729,6 +729,12 @@ def init_db():
             updated_at TEXT
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS device_override_unlocks (
+            ip TEXT PRIMARY KEY,
+            updated_at TEXT
+        )
+    """)
     con.commit()
     con.close()
 
@@ -745,6 +751,14 @@ def ensure_device_overrides_table():
             vendor TEXT,
             device_type TEXT,
             status TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS device_override_unlocks (
+            ip TEXT PRIMARY KEY,
             updated_at TEXT
         )
         """
@@ -775,7 +789,8 @@ def auto_lock_known_vendors():
         SELECT d.ip, d.name, d.vendor, d.device_type, d.status
         FROM devices d
         LEFT JOIN device_overrides o ON o.ip=d.ip
-        WHERE o.ip IS NULL
+        LEFT JOIN device_override_unlocks u ON u.ip=d.ip
+        WHERE o.ip IS NULL AND u.ip IS NULL
         """
     )
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2019,6 +2034,8 @@ def devices():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if ip:
+            run_sql("DELETE FROM device_override_unlocks WHERE ip=?", (ip,))
+
             # Save manual override in a separate table so collector pulls cannot overwrite it.
             run_sql(
                 """
@@ -2107,7 +2124,12 @@ def devices():
         last_seen = h(r["last_seen"])
         device_icon = icon_for_device(r["display_type"] or "Unknown")
         lifecycle_badges = device_lifecycle_badges(r["first_seen"], r["last_seen"])
-        lock_badge = '<span class="badge-lock">Locked</span>' if r["manual_locked"] else ''
+        lock_badge = (
+            f'<form class="unlock-device-form" method="post" action="/device/unlock/{ip}" '
+            f'onsubmit="return confirm(\'Unlock this device and clear its saved identity details?\');">'
+            f'{csrf_input()}<button class="badge-lock unlock-badge" type="submit" '
+            f'title="Unlock and clear saved identity details">Locked <i class="fa-solid fa-lock-open"></i></button></form>'
+        ) if r["manual_locked"] else ''
         private_badge = '<span class="badge-private">Private MAC</span>' if private_mac_address(r["mac"]) else ''
 
         type_select = '<select class="edit-field" data-field="device_type" style="display:none; max-width:150px;">'
@@ -2174,6 +2196,9 @@ def devices():
   border:1px solid rgba(255,255,255,.12);
 }}
 .badge-lock {{ background:rgba(0, 220, 200, 0.16); color:#28e0d5; }}
+.unlock-device-form {{ display:inline; margin:0; }}
+.unlock-badge {{ font:inherit; cursor:pointer; }}
+.unlock-badge:hover {{ background:rgba(0, 220, 200, 0.28); color:#eaffff; }}
 .badge-private {{ display:inline-block; margin-left:8px; padding:2px 7px; border-radius:999px; font-size:11px; border:1px solid rgba(248,200,78,.28); background:rgba(248,200,78,.12); color:#f8c84e; }}
 .badge-new {{ background:rgba(0, 170, 255, 0.16); color:#58c7ff; }}
 .badge-online {{ background:rgba(54, 239, 126, 0.14); color:#36ef7e; }}
@@ -2229,9 +2254,44 @@ def valid_lan_ip(ip):
         return False
 
 
+@app.route("/device/unlock/<ip>", methods=["POST"])
+def unlock_device(ip):
+    if not valid_lan_ip(ip):
+        return shell("Invalid IP", f"{topbar('Invalid IP')}<div class='panel'>Invalid IP address.</div>", "Devices")
+
+    ensure_device_overrides_table()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_sql("DELETE FROM device_overrides WHERE ip=?", (ip,))
+    run_sql(
+        """
+        INSERT INTO device_override_unlocks (ip, updated_at)
+        VALUES (?, ?)
+        ON CONFLICT(ip) DO UPDATE SET updated_at=excluded.updated_at
+        """,
+        (ip, now),
+    )
+    run_sql(
+        """
+        UPDATE devices
+        SET name=ip,
+            vendor='Unknown Vendor',
+            device_type='Unknown'
+        WHERE ip=?
+        """,
+        (ip,),
+    )
+    if request.form.get("return_to") == "device":
+        return_range = request.form.get("range", "1d")
+        if return_range not in ["1d", "7d", "30d"]:
+            return_range = "1d"
+        return redirect(f"/device/{ip}?range={return_range}")
+    return redirect("/devices")
+
+
 def set_manual_status(ip, status):
     ensure_device_overrides_table()
     rows = query("SELECT name, vendor, device_type FROM device_overrides WHERE ip=?", (ip,))
+    unlocked = query("SELECT 1 FROM device_override_unlocks WHERE ip=? LIMIT 1", (ip,))
 
     if rows:
         run_sql(
@@ -2242,7 +2302,7 @@ def set_manual_status(ip, status):
             """,
             (status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ip),
         )
-    else:
+    elif not unlocked:
         d = query("SELECT name, vendor, device_type FROM devices WHERE ip=? LIMIT 1", (ip,))
         name = d[0]["name"] if d and d[0]["name"] else ip
         vendor = d[0]["vendor"] if d and d[0]["vendor"] else "Unknown Vendor"
@@ -2587,6 +2647,16 @@ def device(ip):
     live_speed = fmt_bits_as_bytes(live_speed_data.get("total_bps") or r["live_bps"] or 0)
     live_rx = fmt_bits_as_bytes(live_speed_data.get("rx_bps") or 0)
     live_tx = fmt_bits_as_bytes(live_speed_data.get("tx_bps") or 0)
+    detail_lock_badge = ""
+    if manual_locked:
+        detail_lock_badge = (
+            f'<form class="unlock-device-form" method="post" action="/device/unlock/{h(ip)}" '
+            f'onsubmit="return confirm(\'Unlock this device and clear its saved identity details?\');">'
+            f'{csrf_input()}<input type="hidden" name="return_to" value="device">'
+            f'<input type="hidden" name="range" value="{range_key()}">'
+            f'<button class="badge-lock unlock-badge" type="submit" '
+            f'title="Unlock and clear saved identity details">Locked <i class="fa-solid fa-lock-open"></i></button></form>'
+        )
 
     body = f"""
 {topbar(h(device_name))}
@@ -2619,6 +2689,9 @@ def device(ip):
 .device-scroll {{ max-height:440px; overflow:auto; }}
 .pill-open {{ display:inline-block; padding:3px 9px; border-radius:999px; border:1px solid rgba(62,240,120,.5); color:#52ef86; font-weight:700; }}
 .badge-lock {{ display:inline-block; padding:3px 8px; border-radius:999px; background:rgba(0,220,200,.16); color:#28e0d5; font-size:12px; font-weight:700; }}
+.unlock-device-form {{ display:inline; margin:0; }}
+.unlock-badge {{ border:1px solid rgba(0,220,200,.24); font:inherit; cursor:pointer; }}
+.unlock-badge:hover {{ background:rgba(0,220,200,.28); color:#eaffff; }}
 .badge-private {{ display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid rgba(248,200,78,.28); background:rgba(248,200,78,.12); color:#f8c84e; font-size:12px; font-weight:700; }}
 .mini-link {{ margin-left:8px; color:#28d7ff; font-weight:700; }}
 @media (max-width: 1100px) {{ .device-hero, .device-grid-main, .device-grid-bottom {{ grid-template-columns:1fr; }} .device-tools {{ grid-template-columns:1fr; }} }}
@@ -2655,7 +2728,7 @@ def device(ip):
     <div class="identity-card">
       <div class="device-avatar">{icon_for_device(dtype)}</div>
       <div>
-        <div class="identity-title">{h(device_name)} {'<span class="badge-lock">Locked</span>' if manual_locked else ''} {'<span class="badge-private">Private MAC</span>' if private_mac else ''}</div>
+        <div class="identity-title">{h(device_name)} {detail_lock_badge} {'<span class="badge-private">Private MAC</span>' if private_mac else ''}</div>
         <div class="identity-line"><span>IP Address</span><b>{h(ip)}</b></div>
         <div class="identity-line"><span>MAC Address</span><b>{h(r['mac'])}</b></div>
         <div class="identity-line"><span>Vendor</span><b>{h(vendor)}</b></div>
