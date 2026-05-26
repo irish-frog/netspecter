@@ -207,6 +207,7 @@ class WebSecurityTests(unittest.TestCase):
         self.assertFalse(example["unifi_enabled"])
         self.assertFalse(example["unifi_skip_tls_verify"])
         self.assertFalse(example["ids_email_enabled"])
+        self.assertEqual([], example["ids_banned_ips"])
         self.assertEqual(0, example["scheduled_speedtests_per_day"])
         self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("smtp_password", self.module.SENSITIVE_CONFIG_KEYS)
@@ -251,6 +252,7 @@ class WebSecurityTests(unittest.TestCase):
 
     def test_suricata_ids_alerts_page_has_filtered_notification_actions(self):
         source = (SOURCE_DIR / "app.py").read_text()
+        collector = (SOURCE_DIR / "live_packet_collector.py").read_text()
         rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
         self.assertIn("/ids-alerts", rules)
         self.assertIn("GET", rules["/ids-alerts"])
@@ -264,9 +266,14 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("Save and Send Test Email", source)
         self.assertIn("def send_smtp_message(config, subject, body):", source)
         self.assertIn('value="ignore_source">Ignore Source', source)
-        self.assertIn('value="block_source_dns">Block DNS', source)
-        self.assertIn("it is not a firewall ban", source)
+        self.assertIn('value="ban_source"', source)
+        self.assertIn('value="ban_destination"', source)
+        self.assertIn("Firewall Ban List", source)
+        self.assertIn("traffic routed directly through UniFi", source)
         self.assertNotIn('/device/block/', source)
+        self.assertIn('"ids_banned_ips": [],', collector)
+        self.assertIn("netspecter:ids-ban:forward-source", collector)
+        self.assertIn("netspecter:ids-ban:forward-destination", collector)
 
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()

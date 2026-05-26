@@ -94,6 +94,7 @@ DEFAULT_CONFIG = {
     "scheduled_speedtests_per_day": 0,
     "ids_unknown_only": False,
     "ids_excluded_ips": [],
+    "ids_banned_ips": [],
     "ids_email_enabled": False,
     "smtp_host": "",
     "smtp_port": 587,
@@ -109,7 +110,7 @@ SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
     "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
-    "ids_unknown_only", "ids_excluded_ips",
+    "ids_unknown_only", "ids_excluded_ips", "ids_banned_ips",
     "ids_email_enabled", "smtp_host", "smtp_port", "smtp_security",
     "smtp_username", "smtp_password", "smtp_from", "smtp_to",
     "ids_email_cooldown_minutes",
@@ -2333,6 +2334,13 @@ def valid_lan_ip(ip):
         return False
 
 
+def valid_ipv4_ip(ip):
+    try:
+        return isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address)
+    except Exception:
+        return False
+
+
 @app.route("/device/unlock/<ip>", methods=["POST"])
 def unlock_device(ip):
     if not valid_lan_ip(ip):
@@ -3862,24 +3870,28 @@ def ids_alerts():
         action = request.form.get("action", "filters")
         if action == "ignore_source":
             source_ip = request.form.get("source_ip", "").strip()
-            if not valid_lan_ip(source_ip):
+            if not valid_ipv4_ip(source_ip):
                 action_ok, action_notice = False, "Cannot ignore this alert source because its IP address is invalid."
             else:
                 c["ids_excluded_ips"] = sorted(set(cfg_list(c.get("ids_excluded_ips", []))) | {source_ip})
                 save_cfg(c)
                 restart_collector_service()
                 return redirect("/ids-alerts?saved=ignored")
-        elif action == "block_source_dns":
-            source_ip = request.form.get("source_ip", "").strip()
-            if not valid_lan_ip(source_ip) or source_ip not in ids_device_names():
-                action_ok, action_notice = False, "DNS blocking is available only for known local source devices."
+        elif action in {"ban_source", "ban_destination"}:
+            banned_ip = request.form.get("endpoint_ip", "").strip()
+            if not valid_ipv4_ip(banned_ip):
+                action_ok, action_notice = False, "Cannot ban this endpoint because its IPv4 address is invalid."
             else:
-                ok, _resp = adguard_set_disallowed(source_ip, True)
-                set_manual_status(source_ip, "DNS Blocked" if ok else "DNS Block Failed")
-                if ok:
-                    action_notice = "DNS access blocked for the source device through AdGuard."
-                else:
-                    action_ok, action_notice = False, "AdGuard could not block DNS for this source device."
+                c["ids_banned_ips"] = sorted(set(cfg_list(c.get("ids_banned_ips", []))) | {banned_ip})
+                save_cfg(c)
+                restart_collector_service()
+                return redirect("/ids-alerts?saved=banned")
+        elif action == "unban_ip":
+            banned_ip = request.form.get("endpoint_ip", "").strip()
+            c["ids_banned_ips"] = [ip for ip in cfg_list(c.get("ids_banned_ips", [])) if ip != banned_ip]
+            save_cfg(c)
+            restart_collector_service()
+            return redirect("/ids-alerts?saved=unbanned")
         elif action == "filters":
             c["ids_unknown_only"] = request.form.get("ids_unknown_only") == "1"
             requested_ips = cfg_list(request.form.get("ids_excluded_ips", ""))
@@ -3921,6 +3933,7 @@ def ids_alerts():
     alerts, error = recent_suricata_alerts()
     names = ids_device_names()
     excluded_ips = set(cfg_list(c.get("ids_excluded_ips", [])))
+    banned_ips = set(ip for ip in cfg_list(c.get("ids_banned_ips", [])) if valid_ipv4_ip(ip))
     unknown_only = bool(c.get("ids_unknown_only"))
     visible_alerts = []
     for alert in alerts:
@@ -3953,12 +3966,14 @@ def ids_alerts():
 <form class="ids-action" method="post">
   {csrf_input()}<input type="hidden" name="source_ip" value="{h(alert['source_ip'])}">
   <button type="submit" name="action" value="ignore_source">Ignore Source</button>
-</form>"""
-        if alert["source_ip"] in names:
-            source_actions += f"""
+</form>
 <form class="ids-action" method="post">
-  {csrf_input()}<input type="hidden" name="source_ip" value="{h(alert['source_ip'])}">
-  <button class="btn-yellow" type="submit" name="action" value="block_source_dns">Block DNS</button>
+  {csrf_input()}<input type="hidden" name="endpoint_ip" value="{h(alert['source_ip'])}">
+  <button class="btn-red" type="submit" name="action" value="ban_source" onclick="return confirm('Ban source IP {h(alert['source_ip'])}?')">Ban Source IP</button>
+</form>
+<form class="ids-action" method="post">
+  {csrf_input()}<input type="hidden" name="endpoint_ip" value="{h(alert['destination_ip'])}">
+  <button class="btn-red" type="submit" name="action" value="ban_destination" onclick="return confirm('Ban destination IP {h(alert['destination_ip'])}?')">Ban Destination IP</button>
 </form>"""
         table += f"""
 <tr>
@@ -3977,12 +3992,24 @@ def ids_alerts():
         notice += '<div class="setup-ok">IDS display filters saved.</div>'
     if request.args.get("saved") == "ignored":
         notice += '<div class="setup-ok">Alert source added to the ignored source list.</div>'
+    if request.args.get("saved") == "banned":
+        notice += '<div class="setup-ok">Endpoint IP added to the firewall ban list. The collector has restarted.</div>'
+    if request.args.get("saved") == "unbanned":
+        notice += '<div class="setup-ok">Endpoint IP removed from the firewall ban list.</div>'
     if request.args.get("saved") == "email":
         notice += '<div class="setup-ok">IDS email settings saved. The collector has restarted.</div>'
     if action_notice:
         notice += f'<div class="{"setup-ok" if action_ok else "setup-warning"}">{h(action_notice)}</div>'
     unknown_checked = " checked" if unknown_only else ""
     excluded_value = ", ".join(sorted(excluded_ips))
+    banned_rows = ""
+    for banned_ip in sorted(banned_ips):
+        banned_rows += f"""
+<tr>
+  <td><span class="mono">{h(banned_ip)}</span></td>
+  <td>{h(names.get(banned_ip, "External / unknown endpoint"))}</td>
+  <td><form class="ids-action" method="post">{csrf_input()}<input type="hidden" name="endpoint_ip" value="{h(banned_ip)}"><button type="submit" name="action" value="unban_ip">Remove Ban</button></form></td>
+</tr>"""
     email_checked = " checked" if c.get("ids_email_enabled") else ""
     security_options = "".join(
         f'<option value="{option}"{" selected" if str(c.get("smtp_security", "starttls")) == option else ""}>{label}</option>'
@@ -4003,9 +4030,17 @@ def ids_alerts():
 </div>
 <div class="panel">
   <h2>Suricata IDS</h2>
-  <p>Suricata is detecting and logging network alerts. You can ignore a source, or block DNS for a known local source device through AdGuard.</p>
-  <p class="sub">Block DNS stops a local device from resolving new domains; it is not a firewall ban for external attacking IP addresses.</p>
+  <p>Suricata is detecting and logging network alerts. You can ignore a source or firewall-ban the source or destination IP from an alert.</p>
+  <p class="sub">A firewall ban drops traffic only when it crosses or is addressed to the NetSpecter bridge. It cannot block traffic routed directly through UniFi without passing through NetSpecter.</p>
   <p class="sub">Showing up to 100 alerts from the latest 300 log entries. Filters hide expected sources in NetSpecter only; storage limits control disk usage without disabling IDS detection.</p>
+</div>
+<div class="panel">
+  <h2>Firewall Ban List</h2>
+  <p class="sub">Ban an incoming source IP or an outgoing destination IP from the alert that concerns you. Use care before banning a local gateway or NetSpecter address.</p>
+  <table>
+    <tr><th>Banned IP</th><th>Known Name</th><th>Action</th></tr>
+    {banned_rows or '<tr><td colspan="3">No endpoint IPs currently banned.</td></tr>'}
+  </table>
 </div>
 <div class="panel settings">
   <h2>Alert Display Filters</h2>

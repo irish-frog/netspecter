@@ -120,6 +120,7 @@ DEFAULT_CONFIG = {
     "unifi_skip_tls_verify": False,
     "ids_unknown_only": False,
     "ids_excluded_ips": [],
+    "ids_banned_ips": [],
     "ids_email_enabled": False,
     "smtp_host": "",
     "smtp_port": 587,
@@ -1219,20 +1220,28 @@ def update_one_remote_location():
 
 def nft_signature(config=None):
     c = config or cfg()
+    banned_ips = []
+    for value in cfg_list(c.get("ids_banned_ips", [])):
+        try:
+            if isinstance(ipaddress.ip_address(value), ipaddress.IPv4Address):
+                banned_ips.append(value)
+        except ValueError:
+            continue
     return (
         str(c.get("packet_iface") or "br0"),
         str(lan_network(c)),
         tuple(sorted(ignored_ips(c))),
+        tuple(sorted(set(banned_ips))),
         active_estimated_app_targets(),
     )
 
 
 def install_nft_counters(config=None):
-    """Create an isolated bridge counter table; no traffic is blocked or redirected."""
+    """Create bridge traffic counters and any configured IDS endpoint drop rules."""
     global nft_config_signature, nft_previous_counters, nft_previous_estimated_counters, nft_active_ips
     c = config or cfg()
     signature = nft_signature(c)
-    interface, network_text, ignored, app_targets = signature
+    interface, network_text, ignored, banned_ips, app_targets = signature
     network = ipaddress.ip_network(network_text)
     ignored_set = set(ignored)
     hosts = [str(ip) for ip in network.hosts() if str(ip) not in ignored_set]
@@ -1246,9 +1255,34 @@ def install_nft_counters(config=None):
 
     lines = [
         f"table {NFT_FAMILY} {NFT_TABLE} {{",
+        "  chain ids_input {",
+        "    type filter hook input priority filter; policy accept;",
+    ]
+    for ip in banned_ips:
+        lines.append(
+            f'    ip saddr {ip} drop comment "netspecter:ids-ban:input:{ip}"'
+        )
+    lines.extend([
+        "  }",
+        "  chain ids_output {",
+        "    type filter hook output priority filter; policy accept;",
+    ])
+    for ip in banned_ips:
+        lines.append(
+            f'    ip daddr {ip} drop comment "netspecter:ids-ban:output:{ip}"'
+        )
+    lines.extend([
+        "  }",
         f"  chain {NFT_CHAIN} {{",
         "    type filter hook forward priority filter; policy accept;",
-    ]
+    ])
+    for ip in banned_ips:
+        lines.append(
+            f'    ip saddr {ip} drop comment "netspecter:ids-ban:forward-source:{ip}"'
+        )
+        lines.append(
+            f'    ip daddr {ip} drop comment "netspecter:ids-ban:forward-destination:{ip}"'
+        )
     for ip in hosts:
         lines.append(
             f'    ip saddr {ip} ip daddr != {network} counter comment "netspecter:tx:{ip}"'
@@ -1281,7 +1315,7 @@ def install_nft_counters(config=None):
     nft_active_ips = set()
     print(
         f"nftables traffic counters installed for {network_text} on bridge traffic ({interface}); "
-        f"{len(app_targets)} monitored app attribution target(s)"
+        f"{len(app_targets)} monitored app attribution target(s); {len(banned_ips)} IDS banned endpoint(s)"
     )
 
 

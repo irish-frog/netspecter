@@ -17,6 +17,7 @@
   "scheduled_speedtests_per_day": 0,
   "ids_unknown_only": false,
   "ids_excluded_ips": [],
+  "ids_banned_ips": [],
   "ids_email_enabled": false,
   "smtp_host": "",
   "smtp_port": 587,
