@@ -249,7 +249,7 @@ class WebSecurityTests(unittest.TestCase):
         self.assertGreaterEqual(source.count('type: "bar"'), 2)
         self.assertIn("type: 'bar'", source)
 
-    def test_suricata_ids_alerts_page_is_read_only_and_available(self):
+    def test_suricata_ids_alerts_page_has_filtered_notification_actions(self):
         source = (SOURCE_DIR / "app.py").read_text()
         rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
         self.assertIn("/ids-alerts", rules)
@@ -257,13 +257,16 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("POST", rules["/ids-alerts"])
         self.assertIn('("IDS Alerts", "/ids-alerts", "fa-shield-virus")', source)
         self.assertIn("def recent_suricata_alerts(limit=300):", source)
-        self.assertIn("This view is read-only", source)
         self.assertIn("Only show alerts from source IPs not already known in Devices", source)
         self.assertIn("Excluded Source IPs", source)
         self.assertIn("hidden alerts remain in Suricata logs", source)
         self.assertIn("Enable IDS email alerts", source)
         self.assertIn("Save and Send Test Email", source)
         self.assertIn("def send_smtp_message(config, subject, body):", source)
+        self.assertIn('value="ignore_source">Ignore Source', source)
+        self.assertIn('value="block_source_dns">Block DNS', source)
+        self.assertIn("it is not a firewall ban", source)
+        self.assertNotIn('/device/block/', source)
 
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()

@@ -2858,7 +2858,6 @@ def device(ip):
       <a class="tool-btn blue" href="/scan/{h(ip)}"><i class="fa-solid fa-magnifying-glass"></i> Port Scan</a>
       <form class="tool-action" method="post" action="/device/pause/{h(ip)}">{csrf_input()}<button class="tool-btn yellow" type="submit"><i class="fa-solid fa-ban"></i> Block DNS</button></form>
       <form class="tool-action" method="post" action="/device/resume/{h(ip)}">{csrf_input()}<button class="tool-btn green" type="submit"><i class="fa-solid fa-check"></i> Allow DNS</button></form>
-      <a class="tool-btn red" href="/device/block/{h(ip)}"><i class="fa-solid fa-ban"></i> Block Device</a>
       <a class="tool-btn blue" href="/devices"><i class="fa-solid fa-pen-to-square"></i> Edit Device</a>
       {open_web_button}
       <button class="tool-btn" onclick="navigator.clipboard.writeText('{h(ip)}')"><i class="fa-regular fa-copy"></i> Copy IP</button>
@@ -3861,42 +3860,63 @@ def ids_alerts():
     action_ok = True
     if request.method == "POST":
         action = request.form.get("action", "filters")
-        if action == "filters":
+        if action == "ignore_source":
+            source_ip = request.form.get("source_ip", "").strip()
+            if not valid_lan_ip(source_ip):
+                action_ok, action_notice = False, "Cannot ignore this alert source because its IP address is invalid."
+            else:
+                c["ids_excluded_ips"] = sorted(set(cfg_list(c.get("ids_excluded_ips", []))) | {source_ip})
+                save_cfg(c)
+                restart_collector_service()
+                return redirect("/ids-alerts?saved=ignored")
+        elif action == "block_source_dns":
+            source_ip = request.form.get("source_ip", "").strip()
+            if not valid_lan_ip(source_ip) or source_ip not in ids_device_names():
+                action_ok, action_notice = False, "DNS blocking is available only for known local source devices."
+            else:
+                ok, _resp = adguard_set_disallowed(source_ip, True)
+                set_manual_status(source_ip, "DNS Blocked" if ok else "DNS Block Failed")
+                if ok:
+                    action_notice = "DNS access blocked for the source device through AdGuard."
+                else:
+                    action_ok, action_notice = False, "AdGuard could not block DNS for this source device."
+        elif action == "filters":
             c["ids_unknown_only"] = request.form.get("ids_unknown_only") == "1"
             requested_ips = cfg_list(request.form.get("ids_excluded_ips", ""))
             c["ids_excluded_ips"] = [ip for ip in requested_ips if valid_lan_ip(ip)]
             save_cfg(c)
             restart_collector_service()
             return redirect("/ids-alerts?saved=filters")
-        c["ids_email_enabled"] = request.form.get("ids_email_enabled") == "1"
-        c["smtp_host"] = request.form.get("smtp_host", "").strip()
-        c["smtp_security"] = request.form.get("smtp_security", "starttls").strip()
-        c["smtp_username"] = request.form.get("smtp_username", "").strip()
-        c["smtp_from"] = request.form.get("smtp_from", "").strip()
-        c["smtp_to"] = request.form.get("smtp_to", "").strip()
-        smtp_password = request.form.get("smtp_password", "")
-        if smtp_password:
-            c["smtp_password"] = smtp_password
-        if request.form.get("clear_smtp_password") == "1":
-            c["smtp_password"] = ""
-        try:
-            c["smtp_port"] = max(1, min(65535, int(request.form.get("smtp_port", "587"))))
-        except ValueError:
-            c["smtp_port"] = 587
-        try:
-            c["ids_email_cooldown_minutes"] = max(1, min(1440, int(request.form.get("ids_email_cooldown_minutes", "30"))))
-        except ValueError:
-            c["ids_email_cooldown_minutes"] = 30
-        save_cfg(c)
-        restart_collector_service()
-        if action == "test_email":
-            action_ok, action_notice = send_smtp_message(
-                c,
-                "NetSpecter IDS email test",
-                "This is a test email from NetSpecter IDS alert notifications.",
-            )
         else:
-            return redirect("/ids-alerts?saved=email")
+            c["ids_email_enabled"] = request.form.get("ids_email_enabled") == "1"
+            c["smtp_host"] = request.form.get("smtp_host", "").strip()
+            c["smtp_security"] = request.form.get("smtp_security", "starttls").strip()
+            c["smtp_username"] = request.form.get("smtp_username", "").strip()
+            c["smtp_from"] = request.form.get("smtp_from", "").strip()
+            c["smtp_to"] = request.form.get("smtp_to", "").strip()
+            smtp_password = request.form.get("smtp_password", "")
+            if smtp_password:
+                c["smtp_password"] = smtp_password
+            if request.form.get("clear_smtp_password") == "1":
+                c["smtp_password"] = ""
+            try:
+                c["smtp_port"] = max(1, min(65535, int(request.form.get("smtp_port", "587"))))
+            except ValueError:
+                c["smtp_port"] = 587
+            try:
+                c["ids_email_cooldown_minutes"] = max(1, min(1440, int(request.form.get("ids_email_cooldown_minutes", "30"))))
+            except ValueError:
+                c["ids_email_cooldown_minutes"] = 30
+            save_cfg(c)
+            restart_collector_service()
+            if action == "test_email":
+                action_ok, action_notice = send_smtp_message(
+                    c,
+                    "NetSpecter IDS email test",
+                    "This is a test email from NetSpecter IDS alert notifications.",
+                )
+            else:
+                return redirect("/ids-alerts?saved=email")
 
     alerts, error = recent_suricata_alerts()
     names = ids_device_names()
@@ -3929,6 +3949,17 @@ def ids_alerts():
         level = "red" if priority == 1 else "yellow" if priority == 2 else "blue"
         source_label = f"{alert['source_name']}<br>" if alert["source_name"] else ""
         destination_label = f"{alert['destination_name']}<br>" if alert["destination_name"] else ""
+        source_actions = f"""
+<form class="ids-action" method="post">
+  {csrf_input()}<input type="hidden" name="source_ip" value="{h(alert['source_ip'])}">
+  <button type="submit" name="action" value="ignore_source">Ignore Source</button>
+</form>"""
+        if alert["source_ip"] in names:
+            source_actions += f"""
+<form class="ids-action" method="post">
+  {csrf_input()}<input type="hidden" name="source_ip" value="{h(alert['source_ip'])}">
+  <button class="btn-yellow" type="submit" name="action" value="block_source_dns">Block DNS</button>
+</form>"""
         table += f"""
 <tr>
   <td>{h(alert['ts'])}</td>
@@ -3937,12 +3968,15 @@ def ids_alerts():
   <td>{h(alert['protocol'])}</td>
   <td>{h(source_label).replace('&lt;br&gt;', '<br>')}<span class="mono">{h(alert['source'])}</span></td>
   <td>{h(destination_label).replace('&lt;br&gt;', '<br>')}<span class="mono">{h(alert['destination'])}</span></td>
+  <td>{source_actions}</td>
 </tr>
 """
 
     notice = f'<div class="setup-warning">{h(error)}</div>' if error else ""
     if request.args.get("saved") == "filters":
         notice += '<div class="setup-ok">IDS display filters saved.</div>'
+    if request.args.get("saved") == "ignored":
+        notice += '<div class="setup-ok">Alert source added to the ignored source list.</div>'
     if request.args.get("saved") == "email":
         notice += '<div class="setup-ok">IDS email settings saved. The collector has restarted.</div>'
     if action_notice:
@@ -3957,6 +3991,10 @@ def ids_alerts():
     body = f"""
 {topbar('IDS Alerts')}
 {notice}
+<style>
+.ids-action {{ display:inline-block; margin:0 4px 4px 0; }}
+.ids-action button {{ padding:6px 9px; font-size:11px; white-space:nowrap; }}
+</style>
 <div class="grid">
   <div class="card"><div class="label">Visible Alerts</div><span class="big red">{len(visible_alerts):,}</span><small>From latest log entries</small></div>
   <div class="card"><div class="label">Priority 1</div><span class="big red">{priority_counts.get('1', 0):,}</span><small>Highest concern</small></div>
@@ -3965,7 +4003,8 @@ def ids_alerts():
 </div>
 <div class="panel">
   <h2>Suricata IDS</h2>
-  <p>Suricata is detecting and logging network alerts. This view is read-only; NetSpecter is not blocking traffic from these alerts.</p>
+  <p>Suricata is detecting and logging network alerts. You can ignore a source, or block DNS for a known local source device through AdGuard.</p>
+  <p class="sub">Block DNS stops a local device from resolving new domains; it is not a firewall ban for external attacking IP addresses.</p>
   <p class="sub">Showing up to 100 alerts from the latest 300 log entries. Filters hide expected sources in NetSpecter only; storage limits control disk usage without disabling IDS detection.</p>
 </div>
 <div class="panel settings">
@@ -4013,8 +4052,8 @@ def ids_alerts():
   <div class="panel">
     <h2>Recent Alerts</h2>
     <table>
-      <tr><th>Time</th><th>Priority</th><th>Alert</th><th>Protocol</th><th>Source</th><th>Destination</th></tr>
-      {table or '<tr><td colspan="6">No recent Suricata alerts found.</td></tr>'}
+      <tr><th>Time</th><th>Priority</th><th>Alert</th><th>Protocol</th><th>Source</th><th>Destination</th><th>Action</th></tr>
+      {table or '<tr><td colspan="7">No recent Suricata alerts found.</td></tr>'}
     </table>
   </div>
   <div class="panel">
