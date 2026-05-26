@@ -248,10 +248,13 @@ class WebSecurityTests(unittest.TestCase):
         rules = {rule.rule: rule.methods for rule in self.module.app.url_map.iter_rules()}
         self.assertIn("/ids-alerts", rules)
         self.assertIn("GET", rules["/ids-alerts"])
-        self.assertNotIn("POST", rules["/ids-alerts"])
+        self.assertIn("POST", rules["/ids-alerts"])
         self.assertIn('("IDS Alerts", "/ids-alerts", "fa-shield-virus")', source)
         self.assertIn("def recent_suricata_alerts(limit=300):", source)
         self.assertIn("This view is read-only", source)
+        self.assertIn("Only show alerts from source IPs not already known in Devices", source)
+        self.assertIn("Excluded Source IPs", source)
+        self.assertIn("hidden alerts remain in Suricata logs", source)
 
     def test_vendor_lookup_and_private_mac_guidance(self):
         source = (SOURCE_DIR / "app.py").read_text()

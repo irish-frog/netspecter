@@ -89,12 +89,15 @@ DEFAULT_CONFIG = {
     "unifi_api_key": "",
     "unifi_skip_tls_verify": False,
     "scheduled_speedtests_per_day": 0,
+    "ids_unknown_only": False,
+    "ids_excluded_ips": [],
 }
 
 SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
     "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
+    "ids_unknown_only", "ids_excluded_ips",
 }
 ENCRYPTED_PREFIX = "enc:"
 
@@ -3789,44 +3792,104 @@ def recent_suricata_alerts(limit=300):
     return alerts, ""
 
 
-@app.route("/ids-alerts")
+def ids_endpoint_ip(endpoint):
+    """Return the host part from Suricata's IPv4 endpoint format."""
+    return str(endpoint or "").rsplit(":", 1)[0].strip()
+
+
+def ids_device_names():
+    rows = query(
+        """
+        SELECT d.ip, COALESCE(o.name, d.name, d.ip) AS name
+        FROM devices d
+        LEFT JOIN device_overrides o ON o.ip=d.ip
+        """
+    )
+    return {str(row["ip"]): str(row["name"] or row["ip"]) for row in rows}
+
+
+@app.route("/ids-alerts", methods=["GET", "POST"])
 def ids_alerts():
+    c = cfg()
+    if request.method == "POST":
+        c["ids_unknown_only"] = request.form.get("ids_unknown_only") == "1"
+        requested_ips = cfg_list(request.form.get("ids_excluded_ips", ""))
+        c["ids_excluded_ips"] = [ip for ip in requested_ips if valid_lan_ip(ip)]
+        save_cfg(c)
+        return redirect("/ids-alerts?saved=1")
+
     alerts, error = recent_suricata_alerts()
-    priority_counts = Counter(alert["priority"] for alert in alerts)
-    signature_counts = Counter(alert["signature"] for alert in alerts)
+    names = ids_device_names()
+    excluded_ips = set(cfg_list(c.get("ids_excluded_ips", [])))
+    unknown_only = bool(c.get("ids_unknown_only"))
+    visible_alerts = []
+    for alert in alerts:
+        source_ip = ids_endpoint_ip(alert["source"])
+        destination_ip = ids_endpoint_ip(alert["destination"])
+        alert["source_ip"] = source_ip
+        alert["destination_ip"] = destination_ip
+        alert["source_name"] = names.get(source_ip, "")
+        alert["destination_name"] = names.get(destination_ip, "")
+        if source_ip in excluded_ips:
+            continue
+        if unknown_only and source_ip in names:
+            continue
+        visible_alerts.append(alert)
+
+    hidden_count = len(alerts) - len(visible_alerts)
+    priority_counts = Counter(alert["priority"] for alert in visible_alerts)
+    signature_counts = Counter(alert["signature"] for alert in visible_alerts)
     signature_rows = ""
     for signature, total in signature_counts.most_common(8):
         signature_rows += f"<tr><td>{h(signature)}</td><td><b>{total:,}</b></td></tr>"
 
     table = ""
-    for alert in alerts[:100]:
+    for alert in visible_alerts[:100]:
         priority = int(alert["priority"] or 3)
         level = "red" if priority == 1 else "yellow" if priority == 2 else "blue"
+        source_label = f"{alert['source_name']}<br>" if alert["source_name"] else ""
+        destination_label = f"{alert['destination_name']}<br>" if alert["destination_name"] else ""
         table += f"""
 <tr>
   <td>{h(alert['ts'])}</td>
   <td><span class="{level}"><b>P{priority}</b></span></td>
   <td>{h(alert['signature'])}<br><small>{h(alert['classification'])}</small></td>
   <td>{h(alert['protocol'])}</td>
-  <td class="mono">{h(alert['source'])}</td>
-  <td class="mono">{h(alert['destination'])}</td>
+  <td>{h(source_label).replace('&lt;br&gt;', '<br>')}<span class="mono">{h(alert['source'])}</span></td>
+  <td>{h(destination_label).replace('&lt;br&gt;', '<br>')}<span class="mono">{h(alert['destination'])}</span></td>
 </tr>
 """
 
     notice = f'<div class="setup-warning">{h(error)}</div>' if error else ""
+    if request.args.get("saved") == "1":
+        notice += '<div class="setup-ok">IDS display filters saved.</div>'
+    unknown_checked = " checked" if unknown_only else ""
+    excluded_value = ", ".join(sorted(excluded_ips))
     body = f"""
 {topbar('IDS Alerts')}
 {notice}
 <div class="grid">
-  <div class="card"><div class="label">Recent Alert Sample</div><span class="big red">{len(alerts):,}</span><small>Latest log entries parsed</small></div>
+  <div class="card"><div class="label">Visible Alerts</div><span class="big red">{len(visible_alerts):,}</span><small>From latest log entries</small></div>
   <div class="card"><div class="label">Priority 1</div><span class="big red">{priority_counts.get('1', 0):,}</span><small>Highest concern</small></div>
   <div class="card"><div class="label">Priority 2</div><span class="big yellow">{priority_counts.get('2', 0):,}</span><small>Review activity</small></div>
-  <div class="card"><div class="label">Priority 3</div><span class="big blue">{priority_counts.get('3', 0):,}</span><small>Informational</small></div>
+  <div class="card"><div class="label">Hidden By Filter</div><span class="big blue">{hidden_count:,}</span><small>Still logged by IDS</small></div>
 </div>
 <div class="panel">
   <h2>Suricata IDS</h2>
   <p>Suricata is detecting and logging network alerts. This view is read-only; NetSpecter is not blocking traffic from these alerts.</p>
-  <p class="sub">Showing up to 100 alerts from the latest 300 log entries. Repeated alerts are also the main source of Suricata disk growth.</p>
+  <p class="sub">Showing up to 100 alerts from the latest 300 log entries. Filters hide expected sources in NetSpecter only; storage limits control disk usage without disabling IDS detection.</p>
+</div>
+<div class="panel settings">
+  <h2>Alert Display Filters</h2>
+  <form method="post">
+    {csrf_input()}
+    <label><input type="checkbox" name="ids_unknown_only" value="1" style="width:auto"{unknown_checked}> Only show alerts from source IPs not already known in Devices</label>
+    <small>Known devices can still become compromised; hidden alerts remain in Suricata logs.</small>
+    <label>Excluded Source IPs</label>
+    <input name="ids_excluded_ips" value="{h(excluded_value)}" placeholder="Comma-separated expected source IPs">
+    <small>Hide repeated expected alerts from these source IPs in this page, for example an approved media box.</small>
+    <button type="submit">Save IDS Display Filters</button>
+  </form>
 </div>
 <div class="layout">
   <div class="panel">
