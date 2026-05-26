@@ -57,9 +57,6 @@ DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
 SECRET_KEY_PATH = CONFIG_ROOT / "secret.key"
 SESSION_KEY_PATH = CONFIG_ROOT / "session.key"
-VPN_ROOT = CONFIG_ROOT / "vpn"
-OPENVPN_PROFILE_PATH = VPN_ROOT / "client.ovpn"
-OPENVPN_AUTH_PATH = VPN_ROOT / "auth.txt"
 
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
 
@@ -95,13 +92,9 @@ DEFAULT_CONFIG = {
     "traffic_retention_days": 30,
     "dns_retention_days": 14,
     "public_ip_cache_seconds": 1800,
-    "openvpn_profile_name": "",
-    "openvpn_username": "",
-    "openvpn_password": "",
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "openvpn_password"}
-INTERNAL_SETTINGS_KEYS = {"openvpn_profile_name", "openvpn_username", "openvpn_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass"}
 ENCRYPTED_PREFIX = "enc:"
 
 NOISE_DOMAINS = [
@@ -288,54 +281,6 @@ def save_cfg(data):
         if key in out:
             out[key] = encrypt_config_value(out.get(key))
     secure_file_write(CONFIG_PATH, json.dumps(out, indent=2))
-
-
-def openvpn_profile_installed():
-    return OPENVPN_PROFILE_PATH.exists() and OPENVPN_PROFILE_PATH.stat().st_size > 0
-
-
-def openvpn_service_state():
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "netspecter-openvpn"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=4,
-            check=False,
-        )
-        state = result.stdout.strip().lower()
-        return state if state else "inactive"
-    except Exception:
-        return "unavailable"
-
-
-def write_openvpn_auth_file(config):
-    username = str(config.get("openvpn_username", "") or "").strip()
-    password = str(config.get("openvpn_password", "") or "")
-    if username or password:
-        secure_file_write(OPENVPN_AUTH_PATH, f"{username}\n{password}\n")
-    else:
-        OPENVPN_AUTH_PATH.unlink(missing_ok=True)
-
-
-def openvpn_service_action(action):
-    if action not in {"start", "stop", "restart"}:
-        return False
-    if action != "stop":
-        write_openvpn_auth_file(cfg())
-    try:
-        result = subprocess.run(
-            ["systemctl", action, "netspecter-openvpn"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
-        return result.returncode == 0
-    except Exception as e:
-        print(f"OpenVPN {action} failed: {e}")
-        return False
 
 
 def cfg_list(value):
@@ -1546,7 +1491,6 @@ def shell(title, body, active="Dashboard"):
         ("Map", "/map", "fa-diagram-project"),
         ("Exports", "/exports", "fa-file-export"),
         ("AdGuard", "/adguard", "fa-shield-halved"),
-        ("VPN", "/vpn", "fa-lock"),
         ("Health", "/health", "fa-heart-pulse"),
         ("Settings", "/settings", "fa-gear"),
         ("System", "/system", "fa-server"),
@@ -4132,118 +4076,6 @@ def adguard_action():
     return redirect("/adguard")
 
 
-@app.route("/vpn")
-def vpn_page():
-    c = cfg()
-    state = openvpn_service_state()
-    profile_ready = openvpn_profile_installed()
-    state_class = "green" if state == "active" else "yellow" if state in {"activating", "deactivating"} else "red"
-    message = {
-        "saved": "OpenVPN profile saved. Press Connect when you are ready to test the tunnel.",
-        "connected": "OpenVPN tunnel connection requested. Client routing remains disabled until VPN mode is completed.",
-        "disconnected": "OpenVPN disconnected.",
-        "failed": "OpenVPN could not start. Check the service log for the connection error.",
-        "missing": "Upload an OpenVPN profile before connecting.",
-        "invalid": "That profile could not be saved. Use a valid .ovpn client profile.",
-    }.get(request.args.get("result", ""), "")
-    message_html = f'<div class="setup-ok">{h(message)}</div>' if message else ""
-    profile_name = str(c.get("openvpn_profile_name", "") or "No profile uploaded")
-    credential_status = "Saved" if c.get("openvpn_username") or c.get("openvpn_password") else "Not required / not saved"
-
-    body = f"""
-{topbar('OpenVPN')}
-{message_html}
-<div class="grid">
-  <div class="card"><div class="label">Tunnel Status</div><span class="big {state_class}">{h(state.title())}</span></div>
-  <div class="card"><div class="label">Profile</div><span class="big {'green' if profile_ready else 'yellow'}">{'Ready' if profile_ready else 'Missing'}</span><small>{h(profile_name)}</small></div>
-  <div class="card"><div class="label">Login Details</div><span class="big blue">{h(credential_status)}</span></div>
-</div>
-
-<div class="panel settings">
-  <h2>OpenVPN Profile</h2>
-  <p>Upload the <code>.ovpn</code> client file supplied by your VPN provider. Login details are optional; leave them blank for certificate-only profiles.</p>
-  <form method="post" action="/vpn/profile" enctype="multipart/form-data">
-    {csrf_input()}
-    <label>OVPN Profile</label>
-    <input type="file" name="profile" accept=".ovpn" required>
-    <label>Username (Optional)</label>
-    <input type="text" name="username" value="{h(c.get('openvpn_username', ''))}">
-    <label>Password (Optional)</label>
-    <input type="password" name="password" placeholder="Leave blank to keep saved password">
-    <label><input type="checkbox" name="clear_credentials" value="1" style="width:auto"> Clear saved username and password</label>
-    <button type="submit">Save OpenVPN Profile</button>
-  </form>
-</div>
-
-<div class="panel">
-  <h2>Connection Control</h2>
-  <p class="yellow"><b>Important:</b> this is a staged tunnel test only. Route installation is disabled, so neither the flat LAN nor the Clients VLAN uses this VPN until Clients-only routing is added.</p>
-  <form method="post" action="/vpn/action">
-    {csrf_input()}
-    <button name="action" value="start" type="submit">Connect</button>
-    <button name="action" value="restart" type="submit">Reconnect</button>
-    <button class="btn-red" name="action" value="stop" type="submit">Disconnect</button>
-  </form>
-</div>
-"""
-    return shell("OpenVPN", body, "VPN")
-
-
-@app.route("/vpn/profile", methods=["POST"])
-def vpn_profile():
-    uploaded = request.files.get("profile")
-    if not uploaded or not uploaded.filename.lower().endswith(".ovpn"):
-        return redirect("/vpn?result=invalid")
-    raw = uploaded.read(1024 * 1024 + 1)
-    if not raw or len(raw) > 1024 * 1024:
-        return redirect("/vpn?result=invalid")
-    try:
-        profile = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return redirect("/vpn?result=invalid")
-    directives = []
-    for line in profile.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith(("#", ";")):
-            directives.append(stripped.split(None, 1)[0].lower())
-    blocked_directives = {
-        "script-security", "up", "down", "route-up", "ipchange",
-        "client-connect", "tls-verify", "auth-user-pass-verify", "plugin",
-    }
-    if "remote" not in directives or blocked_directives.intersection(directives):
-        return redirect("/vpn?result=invalid")
-
-    c = cfg()
-    if request.form.get("clear_credentials") == "1":
-        c["openvpn_username"] = ""
-        c["openvpn_password"] = ""
-    else:
-        c["openvpn_username"] = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        if password:
-            c["openvpn_password"] = password
-    c["openvpn_profile_name"] = Path(uploaded.filename).name
-    save_cfg(c)
-    VPN_ROOT.mkdir(parents=True, exist_ok=True)
-    try:
-        VPN_ROOT.chmod(0o700)
-    except Exception:
-        pass
-    secure_file_write(OPENVPN_PROFILE_PATH, profile)
-    write_openvpn_auth_file(c)
-    return redirect("/vpn?result=saved")
-
-
-@app.route("/vpn/action", methods=["POST"])
-def vpn_action():
-    action = request.form.get("action", "")
-    if action in {"start", "restart"} and not openvpn_profile_installed():
-        return redirect("/vpn?result=missing")
-    if not openvpn_service_action(action):
-        return redirect("/vpn?result=failed")
-    return redirect(f"/vpn?result={'disconnected' if action == 'stop' else 'connected'}")
-
-
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     c = cfg()
@@ -4348,7 +4180,7 @@ def settings():
     fields = ""
     for key in ordered_keys:
         val = c[key]
-        if key in ["app_name", "tagline", "admin_password_hash"] or key in INTERNAL_SETTINGS_KEYS:
+        if key in ["app_name", "tagline", "admin_password_hash"]:
             continue
         typ = "password" if "pass" in key else "text"
         display_val = "" if key in SENSITIVE_CONFIG_KEYS else ", ".join(val) if isinstance(val, list) else val
