@@ -32,6 +32,7 @@ body {
   font-family: Inter, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
+  overflow-x: hidden;
 }
 
 .sidebar {
@@ -904,21 +905,168 @@ button,
 
 @media (max-width: 850px) {
   .sidebar {
-    position: relative;
+    position: sticky;
+    top: 0;
+    z-index: 20;
     width: 100%;
     height: auto;
+    padding: 8px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .24);
   }
 
   .brand-logo {
-    width: 215px;
+    width: 116px;
+    height: 42px;
+    margin: 0 auto 6px;
+  }
+
+  .designer-credit {
+    display: none;
+  }
+
+  .nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 3px;
+  }
+
+  .nav a {
+    flex: 0 0 auto;
+    gap: 7px;
+    margin: 0;
+    padding: 9px 11px;
+    font-size: 13px;
+  }
+
+  .nav a i {
+    width: auto;
+    font-size: 15px;
   }
 
   .content {
     margin-left: 0;
-    padding: 16px;
+    padding: 14px 10px 28px;
+  }
+
+  .topbar {
+    margin-bottom: 12px;
+  }
+
+  .topbar h1 {
+    font-size: 20px;
+  }
+
+  .badges {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    white-space: nowrap;
+    margin-top: 10px;
+    padding-bottom: 4px;
+  }
+
+  .badges span,
+  .badges a span {
+    margin-left: 0;
+    padding: 7px 10px;
+  }
+
+  .time-picker {
+    max-width: 100%;
+    overflow-x: auto;
+    margin-left: 0;
+  }
+
+  .panel {
+    padding: 12px;
+  }
+
+  .card {
+    padding: 14px;
+    min-height: 100px;
+  }
+
+  th,
+  td {
+    padding: 10px 9px;
+    font-size: 13px;
+  }
+
+  .panel table:has(th:nth-child(5)) {
+    min-width: 560px;
   }
 
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .apps-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .apps-header {
+    display: none;
+  }
+
+  .app-row {
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 8px 10px;
+    padding: 12px 8px;
+  }
+
+  .app-row .bar {
+    grid-column: 1 / -1;
+  }
+
+  .app-row .app-meta {
+    grid-column: auto;
+  }
+
+  .apps-panel {
+    padding: 4px;
+  }
+
+  .map-flow {
+    gap: 5px;
+  }
+
+  .map-node {
+    min-height: 92px;
+    padding: 12px;
+  }
+
+  #destinationMap {
+    height: 56vh;
+    min-height: 320px;
+  }
+
+  button,
+  .btn,
+  input,
+  select,
+  textarea {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-logo {
+    display: none;
+  }
+
+  .sidebar {
+    padding-top: 10px;
+  }
+
+  .apps-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .big {
+    font-size: 26px;
   }
 }

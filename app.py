@@ -397,7 +397,7 @@ def login_template(title, body):
 <title>{h(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260525g">
+<link rel="stylesheet" href="/static/theme.css?v=20260526m">
 </head>
 <body class="login-body">
   <div class="login-card">
@@ -1445,7 +1445,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260525g">
+<link rel="stylesheet" href="/static/theme.css?v=20260526m">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -1885,7 +1885,16 @@ def dashboard():
 .chart-legend .upload {{ background:#9c6cff; }}
 .blue {{ color:#5ba8ff !important; }} .purple {{ color:#a68bff !important; }} .teal {{ color:#00ddc7 !important; }} .green {{ color:#20df9f !important; }} .red {{ color:#ff526c !important; }} .yellow {{ color:#f8c84e !important; }}
 @media (max-width:1200px) {{ .dash-grid, .dash-grid.big, .dash-summary, .dash-two {{ grid-template-columns:1fr 1fr; }} .dash-ring {{ display:none; }} }}
-@media (max-width:700px) {{ .dash-grid, .dash-grid.big, .dash-summary, .dash-two {{ grid-template-columns:1fr; }} }}
+@media (max-width:700px) {{
+  .dash-grid, .dash-grid.big, .dash-summary, .dash-two {{ grid-template-columns:1fr; }}
+  .dash-actions {{ align-items:stretch; }}
+  .speed-test-form {{ flex-direction:column; align-items:stretch; }}
+  .dash-panel {{ padding:14px; }}
+  .dash-total-card {{ text-align:left; }}
+  .legend .legend-live {{ margin-left:0; font-size:13px; }}
+  .dash-app-row {{ grid-template-columns:minmax(0, 1fr) auto; gap:9px; }}
+  .dash-app-name, .dash-app-bar {{ grid-column:1 / -1; }}
+}}
 </style>
 
 <div class="dash-wrap">
@@ -2617,6 +2626,14 @@ def device(ip):
 .badge-private {{ display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid rgba(248,200,78,.28); background:rgba(248,200,78,.12); color:#f8c84e; font-size:12px; font-weight:700; }}
 .mini-link {{ margin-left:8px; color:#28d7ff; font-weight:700; }}
 @media (max-width: 1100px) {{ .device-hero, .device-grid-main, .device-grid-bottom {{ grid-template-columns:1fr; }} .device-tools {{ grid-template-columns:1fr; }} }}
+@media (max-width: 600px) {{
+  .device-stat {{ padding:14px; }}
+  .identity-card {{ grid-template-columns:1fr; justify-items:center; }}
+  .identity-title {{ text-align:center; font-size:20px; }}
+  .identity-line {{ grid-template-columns:1fr; gap:2px; margin:9px 0; }}
+  .device-app-row {{ grid-template-columns:minmax(0, 1fr) auto; gap:10px; }}
+  .device-app-name, .device-app-bar {{ grid-column:1 / -1; }}
+}}
 </style>
 
 <div class="device-hero">
