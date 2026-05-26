@@ -214,6 +214,7 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("def unifi_json_response(result):", source)
         self.assertIn("UniFi OS firmware 5.0.3 or newer", source)
         self.assertIn("Connector URL corrected automatically.", source)
+        self.assertIn("restore the required /proxy portion", source)
         self.assertIn("Find Site Automatically", source)
         self.assertIn("refresh_unifi_clients", collector)
         self.assertIn("def unifi_connector_bases(config):", collector)

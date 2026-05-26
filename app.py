@@ -4071,16 +4071,9 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
-    bases = [base]
-    if "/proxy/network/integration" in base:
-        alternate = base.replace("/proxy/network/integration", "/network/integration", 1)
-    elif "/network/integration" in base:
-        alternate = base.replace("/network/integration", "/proxy/network/integration", 1)
-    else:
-        alternate = ""
-    if alternate and alternate not in bases:
-        bases.append(alternate)
-    return bases
+    if "/proxy/network/integration" not in base and "/network/integration" in base:
+        base = base.replace("/network/integration", "/proxy/network/integration", 1)
+    return [base]
 
 
 def unifi_client_endpoint(config, base=None):
@@ -4133,7 +4126,7 @@ def find_unifi_site(config):
             if not preferred or not preferred.get("id"):
                 names = ", ".join(str(site.get("name", "Unnamed")) for site in sites)
                 return False, f"Multiple sites found ({names}). Select the correct site ID manually."
-            changed_url = base != bases[0]
+            changed_url = base != str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
             config["unifi_connector_url"] = base
             config["unifi_site_id"] = str(preferred["id"]).strip()
             adjusted = " Connector URL corrected automatically." if changed_url else ""
@@ -4221,8 +4214,8 @@ def integrations():
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
     <label>UniFi Connector URL</label>
-    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/network/integration">
-    <small>Use the Network API connector URL for your console, without the site or clients part. NetSpecter will correct either UniFi connector URL form automatically.</small>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com/v1/connector/consoles/CONSOLE-ID/proxy/network/integration">
+    <small>Use the Network API connector URL for your console, without the site or clients part. NetSpecter will restore the required /proxy portion if it is missing.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
     <small>Leave this blank and use Find Site Automatically after entering your API key.</small>

@@ -359,16 +359,9 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
-    bases = [base]
-    if "/proxy/network/integration" in base:
-        alternate = base.replace("/proxy/network/integration", "/network/integration", 1)
-    elif "/network/integration" in base:
-        alternate = base.replace("/network/integration", "/proxy/network/integration", 1)
-    else:
-        alternate = ""
-    if alternate and alternate not in bases:
-        bases.append(alternate)
-    return bases
+    if "/proxy/network/integration" not in base and "/network/integration" in base:
+        base = base.replace("/network/integration", "/proxy/network/integration", 1)
+    return [base]
 
 
 def refresh_unifi_clients(config):
