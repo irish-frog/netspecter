@@ -1149,7 +1149,7 @@ def git_command(source_root, *args, timeout=20):
 def update_status(force=False):
     now = time.time()
     cached = UPDATE_STATUS_CACHE.get("data")
-    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 300:
+    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 3600:
         return cached
 
     source = source_checkout_root()
@@ -1849,6 +1849,7 @@ refreshUpdateStatusBadge();
 def topbar(title="Dashboard"):
     c = cfg()
     adguard_url = str(c.get("adguard_url", "") or "#")
+    update_badge = '<a id="updateStatusBadge" href="/system#updates"><span>Checking updates...</span></a>' if title == "Dashboard" else '<a href="/system#updates"><span>Updates</span></a>'
 
     return f"""
 <div class="topbar">
@@ -1859,7 +1860,7 @@ def topbar(title="Dashboard"):
   <div class="badges">
     <span>Observed IPv4 traffic</span>
     <span>Public IP: {public_ip(refresh=False)}</span>
-    <a id="updateStatusBadge" href="/system#updates"><span>Checking updates...</span></a>
+    {update_badge}
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
     <span>LAN: {c.get('lan_prefix')}0/24</span>
@@ -2227,7 +2228,7 @@ async function loadDashboardTraffic() {{
 }}
 loadDashboardSummary();
 loadDashboardTraffic();
-setInterval(loadDashboardSummary, 5000);
+setInterval(loadDashboardSummary, 10000);
 setInterval(loadDashboardTraffic, 30000);
 </script>
 """

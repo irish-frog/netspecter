@@ -110,12 +110,14 @@ class WebSecurityTests(unittest.TestCase):
 
     def test_dashboard_summary_refreshes_fast_and_heavy_chart_refreshes_slower(self):
         source = (SOURCE_DIR / "app.py").read_text()
-        self.assertIn("setInterval(loadDashboardSummary, 5000);", source)
+        self.assertIn("setInterval(loadDashboardSummary, 10000);", source)
         self.assertIn("setInterval(loadDashboardTraffic, 30000);", source)
         self.assertNotIn("setInterval(loadDashboardSummary, 30000);", source)
+        self.assertNotIn("setInterval(loadDashboardSummary, 5000);", source)
         self.assertNotIn("setInterval(loadDashboardTraffic, 5000);", source)
         self.assertIn('class="dash-app-row" href="/applications/{quote(category, safe=\'\')}?range={range_key()}"', source)
         self.assertIn("if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]'))", source)
+        self.assertIn('if title == "Dashboard" else \'<a href="/system#updates"><span>Updates</span></a>\'', source)
 
     def test_estimated_app_traffic_has_storage_and_app_detail_output(self):
         source = (SOURCE_DIR / "app.py").read_text()
