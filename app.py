@@ -2140,56 +2140,18 @@ def api_dashboard_summary():
     }
 
 
-@app.route("/")
-def dashboard():
-    c = cfg()
-    fast_page_mode = bool(c.get("fast_page_mode", True))
-    down, up, total, active, blocked, top = totals()
-    health = system_health()
-
-    hosts = latest_hosts(20)
-    top_device = hosts[0] if hosts else None
-    top_device_name = top_device["name"] if top_device else "None"
-    top_device_total = fmt_mb(top_device["total_mb"]) if top_device else "0.00 MB"
-    live_net = live_network_speed()
-    live_down_bps = live_net.get("rx_bps", 0)
-    live_up_bps = live_net.get("tx_bps", 0)
-    live_total_bps = live_net.get("total_bps", 0)
-
-    start_day = range_start_day()
-    dns_today = query("SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=?", (start_day,))
-    dns_total = int(dns_today[0]["total"] or 0) if dns_today else 0
-    unique_domains = int(dns_today[0]["domains"] or 0) if dns_today else 0
-    blocked_pct = round((blocked / dns_total * 100), 1) if dns_total else 0
-    traffic_range_label = {"1d": "Today", "7d": "Last 7 Days", "30d": "Last 30 Days"}.get(range_key(), "Today")
-    dashboard_period = {"1d": "24h", "7d": "7d", "30d": "30d"}.get(range_key(), "24h")
-    adguard_ok, adguard_status = ag_get("/status")
-    protection_enabled = adguard_status.get("protection_enabled") if adguard_ok and isinstance(adguard_status, dict) else None
-    protection_text = "ON" if protection_enabled is True else "OFF" if protection_enabled is False else "UNKNOWN"
-    protection_class = "green" if protection_enabled is True else "red" if protection_enabled is False else "yellow"
-    protection_detail = "AdGuard filtering" if protection_enabled is not None else "AdGuard unavailable"
-
-    blocked_today = query(
-        """
-        SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains
-        FROM dns_querylog
-        WHERE day>=? AND blocked=1
-        """,
-        (start_day,),
-    )
-    blocked_domains = int(blocked_today[0]["domains"] or 0) if blocked_today else 0
-
+def dashboard_app_rows():
     cats = top_categories(6)
     cat_total = sum(int(x["total"] or 0) for x in cats) or 1
     max_count = max([int(x["total"] or 1) for x in cats], default=1)
-    app_rows = ""
+    rows = ""
 
     for r in cats:
         category = str(r["category"] or "Other")
         count = int(r["total"] or 0)
         width = max(4, min(count / max_count * 100, 100))
         pct = round(count / cat_total * 100, 1)
-        app_rows += f"""
+        rows += f"""
 <a class="dash-app-row" href="/applications/{quote(category, safe='')}?range={range_key()}">
   <div class="dash-app-name">{icon_for_app(category)}<span>{h(category)}</span></div>
   <div class="dash-app-bar"><span style="width:{width}%"></span></div>
@@ -2198,7 +2160,11 @@ def dashboard():
 </a>
 """
 
-    health_cards = f"""
+    return rows or '<p>No application data yet</p>'
+
+
+def dashboard_health_cards(health):
+    return f"""
 <div class="dash-card slim"><i class="fa-solid fa-wave-square"></i><div><span>CPU</span><b class="blue">{health['cpu']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-microchip purple"></i><div><span>Memory</span><b class="purple">{health['mem']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-hard-drive"></i><div><span>Disk / HDD</span><b class="{'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</b></div></div>
@@ -2206,6 +2172,44 @@ def dashboard():
 <div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="{'green' if health['collector_state'] == 'OK' else 'yellow'}">{health['collector_state']}</b></div></div>
 <div class="dash-card slim"><i class="fa-regular fa-clock"></i><div><span>Uptime</span><b>{health['uptime']}</b></div></div>
 """
+
+
+@app.route("/api/dashboard-apps")
+def api_dashboard_apps():
+    return {"html": dashboard_app_rows()}
+
+
+@app.route("/api/dashboard-health")
+def api_dashboard_health():
+    health = system_health()
+    adguard_ok, adguard_status = ag_get("/status")
+    protection_enabled = adguard_status.get("protection_enabled") if adguard_ok and isinstance(adguard_status, dict) else None
+    protection_text = "ON" if protection_enabled is True else "OFF" if protection_enabled is False else "UNKNOWN"
+    protection_class = "green" if protection_enabled is True else "red" if protection_enabled is False else "yellow"
+    protection_detail = "AdGuard filtering" if protection_enabled is not None else "AdGuard unavailable"
+    return {
+        "health_html": dashboard_health_cards(health),
+        "protection_text": protection_text,
+        "protection_class": protection_class,
+        "protection_detail": protection_detail,
+    }
+
+
+@app.route("/")
+def dashboard():
+    c = cfg()
+    fast_page_mode = bool(c.get("fast_page_mode", True))
+    down = up = total = 0
+    active = blocked = dns_total = unique_domains = blocked_domains = 0
+    blocked_pct = 0
+    live_down_bps = live_up_bps = live_total_bps = 0
+    traffic_range_label = {"1d": "Today", "7d": "Last 7 Days", "30d": "Last 30 Days"}.get(range_key(), "Today")
+    dashboard_period = {"1d": "24h", "7d": "7d", "30d": "30d"}.get(range_key(), "24h")
+    protection_text = "LOADING"
+    protection_class = "yellow"
+    protection_detail = "Loading AdGuard status"
+    app_rows = '<p class="sub">Loading applications...</p>'
+    health_cards = '<div class="dash-card slim"><i class="fa-solid fa-spinner"></i><div><span>System</span><b class="yellow">Loading</b></div></div>'
 
     body = f"""
 {topbar("Dashboard")}
@@ -2340,7 +2344,7 @@ def dashboard():
   <div class="dash-summary">
     <div id="dashboardBlockRing" class="dash-ring" title="DNS blocked share: {blocked_pct}%" style="background:conic-gradient(#ff526c 0 {blocked_pct}%, #00ddc7 {blocked_pct}% 100%);"></div>
     <a class="dash-card" href="/blocked"><div class="label">Total Blocked</div><span id="dashboardBlocked" class="big red">{blocked:,}</span><small>Blocked domains: <span id="dashboardBlockedDomains">{blocked_domains:,}</span></small></a>
-    <a class="dash-card" href="/adguard"><div class="label">Protection</div><span class="big {protection_class}">{protection_text}</span><small>{protection_detail}</small></a>
+    <a class="dash-card" href="/adguard"><div class="label">Protection</div><span id="dashboardProtection" class="big {protection_class}">{protection_text}</span><small id="dashboardProtectionDetail">{protection_detail}</small></a>
     <a class="dash-card" href="/devices"><div class="label">Traffic Devices</div><span id="dashboardTrafficDevices" class="big blue">{active}</span><small>Seen in selected range</small></a>
     <a class="dash-card" href="/traffic"><div class="label">Traffic {traffic_range_label}</div><span id="dashboardTrafficTotal" class="big teal">{fmt_mb(total)}</span><small>Down <span id="dashboardTrafficDown">{fmt_mb(down)}</span> | Up <span id="dashboardTrafficUp">{fmt_mb(up)}</span></small></a>
     <a class="dash-card dash-total-card" href="/applications"><div class="label">Total Queries</div><span id="dashboardDnsTotal" class="big">{dns_total:,}</span><small><span id="dashboardUniqueDomains">{unique_domains:,}</span> domains</small></a>
@@ -2365,11 +2369,11 @@ def dashboard():
 
     <div class="dash-panel">
       <h2>Top Applications</h2>
-      {app_rows or '<p>No application data yet</p>'}
+      <div id="dashboardTopApps">{app_rows or '<p>No application data yet</p>'}</div>
     </div>
   </div>
 
-  <div class="dash-grid">
+  <div class="dash-grid" id="dashboardHealthCards">
     {health_cards}
   </div>
 
@@ -2450,12 +2454,45 @@ async function loadDashboardTraffic() {{
     setDashboardGraphStatus("graph failed");
   }}
 }}
+async function loadDashboardApps() {{
+  try {{
+    const response = await fetch("/api/dashboard-apps?range={range_key()}", {{cache: "no-store"}});
+    if (!response.ok) return;
+    const data = await response.json();
+    const el = document.getElementById("dashboardTopApps");
+    if (el) el.innerHTML = data.html || "<p>No application data yet</p>";
+  }} catch (error) {{
+    console.log("Dashboard apps refresh failed:", error);
+  }}
+}}
+async function loadDashboardHealth() {{
+  try {{
+    const response = await fetch("/api/dashboard-health", {{cache: "no-store"}});
+    if (!response.ok) return;
+    const data = await response.json();
+    const cards = document.getElementById("dashboardHealthCards");
+    if (cards) cards.innerHTML = data.health_html || "";
+    const protection = document.getElementById("dashboardProtection");
+    if (protection) {{
+      protection.textContent = data.protection_text || "UNKNOWN";
+      protection.className = "big " + (data.protection_class || "yellow");
+    }}
+    const protectionDetail = document.getElementById("dashboardProtectionDetail");
+    if (protectionDetail) protectionDetail.textContent = data.protection_detail || "";
+  }} catch (error) {{
+    console.log("Dashboard health refresh failed:", error);
+  }}
+}}
 const dashboardGraphRefresh = document.getElementById("dashboardGraphRefresh");
 if (dashboardGraphRefresh) dashboardGraphRefresh.addEventListener("click", loadDashboardTraffic);
+loadDashboardSummary();
+loadDashboardApps();
+loadDashboardHealth();
 loadDashboardTraffic();
 if (!dashboardFastMode) {{
-  loadDashboardSummary();
   setInterval(loadDashboardSummary, 10000);
+  setInterval(loadDashboardApps, 30000);
+  setInterval(loadDashboardHealth, 30000);
   setInterval(loadDashboardTraffic, 30000);
 }}
 </script>
@@ -3519,57 +3556,12 @@ def traffic():
     mode = request.args.get("type", "total")
     sort = request.args.get("sort", "total")
     direction = request.args.get("dir", "desc")
-    start_day = range_start_day()
 
     title = "Total Traffic"
     if mode == "download":
         title = "Download Usage"
     elif mode == "upload":
         title = "Upload Usage"
-
-    sort_map = {
-        "device": "name",
-        "ip": "ip_sort",
-        "download": "downloaded_mb",
-        "upload": "uploaded_mb",
-        "total": "total_mb",
-    }
-
-    sort_col = sort_map.get(sort, "total_mb")
-    direction_sql = "ASC" if direction == "asc" else "DESC"
-
-    rows = cached_query(
-        f"traffic_rows:{start_day}:{mode}:{sort}:{direction}",
-        10,
-        f"""
-        WITH usage AS (
-            SELECT
-                ip,
-                MAX(name) AS name,
-                MAX(mac) AS mac,
-                SUM(downloaded_mb) AS downloaded_mb,
-                SUM(uploaded_mb) AS uploaded_mb,
-                SUM(total_mb) AS total_mb,
-                MAX(live_bps) AS live_bps,
-                MAX(day) AS day,
-                MAX(ts) AS ts
-            FROM traffic_intervals
-            WHERE day>=?
-            GROUP BY ip
-        )
-        SELECT
-            COALESCE(o.name, d.name, u.name, u.ip) AS name,
-            u.ip AS ip_sort,
-            u.*
-        FROM usage u
-        LEFT JOIN devices d ON d.ip = u.ip
-        LEFT JOIN device_overrides o ON o.ip = u.ip
-        ORDER BY {sort_col} {direction_sql}
-        LIMIT 200
-        """,
-        (start_day,),
-    )
-    live_speeds = live_all_host_speeds()
 
     def sort_link(label, key):
         next_dir = "desc"
@@ -3578,19 +3570,6 @@ def traffic():
             next_dir = "asc" if direction == "desc" else "desc"
             marker = " ↓" if direction == "desc" else " ↑"
         return f'<a class="sort-link" href="/traffic?range={range_key()}&type={h(mode)}&sort={h(key)}&dir={next_dir}">{label}{marker}</a>'
-
-    table = ""
-    for r in rows:
-        table += f"""
-<tr onclick="location.href='/device/{h(r['ip'])}?range={range_key()}'">
-  <td>{h(r['name'])}</td>
-  <td>{h(r['ip'])}</td>
-  <td>{fmt_mb(r['downloaded_mb'])}</td>
-  <td>{fmt_mb(r['uploaded_mb'])}</td>
-  <td>{fmt_mb(r['total_mb'])}</td>
-  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_bits_as_bytes(live_speeds.get(str(r['ip']), {}).get('total_bps', 0))}</span></td>
-</tr>
-"""
 
     clear_notice = ""
     if request.args.get("cleared") == "1":
@@ -3629,11 +3608,88 @@ tr[onclick]:hover {{ background:rgba(0,190,255,.07); }}
 <th>{sort_link('Total', 'total')}</th>
 <th>Throughput</th>
 </tr>
-{table}
+<tbody id="trafficRows"><tr><td colspan="6">Loading traffic...</td></tr></tbody>
 </table>
 </div>
+<script>
+async function loadTrafficRows() {{
+  try {{
+    const response = await fetch("/api/traffic-rows?range={range_key()}&type={h(mode)}&sort={h(sort)}&dir={h(direction)}", {{cache: "no-store"}});
+    if (!response.ok) return;
+    const data = await response.json();
+    const rows = document.getElementById("trafficRows");
+    if (rows) rows.innerHTML = data.html || '<tr><td colspan="6">No traffic yet</td></tr>';
+    refreshLiveSpeeds();
+  }} catch (error) {{
+    console.log("Traffic rows failed:", error);
+  }}
+}}
+loadTrafficRows();
+</script>
 """
     return shell(title, body, "Traffic")
+
+
+@app.route("/api/traffic-rows")
+def api_traffic_rows():
+    mode = request.args.get("type", "total")
+    sort = request.args.get("sort", "total")
+    direction = request.args.get("dir", "desc")
+    start_day = range_start_day()
+    sort_map = {
+        "device": "name",
+        "ip": "ip_sort",
+        "download": "downloaded_mb",
+        "upload": "uploaded_mb",
+        "total": "total_mb",
+    }
+    sort_col = sort_map.get(sort, "total_mb")
+    direction_sql = "ASC" if direction == "asc" else "DESC"
+    rows = cached_query(
+        f"traffic_rows:{start_day}:{mode}:{sort}:{direction}",
+        10,
+        f"""
+        WITH usage AS (
+            SELECT
+                ip,
+                MAX(name) AS name,
+                MAX(mac) AS mac,
+                SUM(downloaded_mb) AS downloaded_mb,
+                SUM(uploaded_mb) AS uploaded_mb,
+                SUM(total_mb) AS total_mb,
+                MAX(live_bps) AS live_bps,
+                MAX(day) AS day,
+                MAX(ts) AS ts
+            FROM traffic_intervals
+            WHERE day>=?
+            GROUP BY ip
+        )
+        SELECT
+            COALESCE(o.name, d.name, u.name, u.ip) AS name,
+            u.ip AS ip_sort,
+            u.*
+        FROM usage u
+        LEFT JOIN devices d ON d.ip = u.ip
+        LEFT JOIN device_overrides o ON o.ip = u.ip
+        ORDER BY {sort_col} {direction_sql}
+        LIMIT 200
+        """,
+        (start_day,),
+    )
+    live_speeds = live_all_host_speeds()
+    html_rows = ""
+    for r in rows:
+        html_rows += f"""
+<tr onclick="location.href='/device/{h(r['ip'])}?range={range_key()}'">
+  <td>{h(r['name'])}</td>
+  <td>{h(r['ip'])}</td>
+  <td>{fmt_mb(r['downloaded_mb'])}</td>
+  <td>{fmt_mb(r['uploaded_mb'])}</td>
+  <td>{fmt_mb(r['total_mb'])}</td>
+  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_bits_as_bytes(live_speeds.get(str(r['ip']), {}).get('total_bps', 0))}</span></td>
+</tr>
+"""
+    return {"html": html_rows}
 
 
 @app.route("/traffic/clear", methods=["GET", "POST"])
