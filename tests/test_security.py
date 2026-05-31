@@ -91,6 +91,10 @@ class WebSecurityTests(unittest.TestCase):
         example = json.loads((SOURCE_DIR / "config.example.json").read_text())
         self.assertEqual(2, self.module.DEFAULT_CONFIG["collect_interval_seconds"])
         self.assertEqual(2, example["collect_interval_seconds"])
+        self.assertEqual(90, self.module.DEFAULT_CONFIG["traffic_retention_days"])
+        self.assertEqual(90, example["traffic_retention_days"])
+        self.assertEqual(90, self.module.DEFAULT_CONFIG["dns_retention_days"])
+        self.assertEqual(90, example["dns_retention_days"])
         self.assertTrue(self.module.DEFAULT_CONFIG["fast_page_mode"])
         self.assertTrue(example["fast_page_mode"])
 
@@ -135,6 +139,9 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("/api/dashboard-health", source)
         self.assertIn("/api/traffic-rows", source)
         self.assertIn('id="trafficRows"', source)
+        self.assertIn('id="dashboardSummaryLoading"', source)
+        self.assertIn("Last 60 Days", source)
+        self.assertIn("Last 90 Days", source)
         self.assertNotIn("setInterval(loadDashboardSummary, 30000);", source)
         self.assertNotIn("setInterval(loadDashboardSummary, 5000);", source)
         self.assertNotIn("setInterval(refreshLiveSpeeds, 2000);", source)
@@ -146,6 +153,15 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn('action="/system"', source)
         self.assertIn('Update Available</button>', source)
         self.assertIn('if (dashboardButton) dashboardButton.style.display = "inline-flex";', source)
+
+    def test_range_picker_includes_longer_ranges(self):
+        with self.module.app.test_request_context("/traffic?range=90d"):
+            html = self.module.time_picker()
+            self.assertIn('href="/traffic?range=60d"', html)
+            self.assertIn('href="/traffic?range=90d"', html)
+            self.assertIn('class="active" href="/traffic?range=90d"', html)
+            self.assertEqual(90, self.module.range_days())
+            self.assertEqual("90d", self.module.range_key())
 
     def test_app_shell_partial_returns_body_only(self):
         with self.module.app.test_request_context("/traffic?_partial=1"):

@@ -89,8 +89,8 @@ DEFAULT_CONFIG = {
     "admin_password_hash": "",
     "lan_prefix": "192.168.1.",
     "collect_interval_seconds": 2,
-    "traffic_retention_days": 30,
-    "dns_retention_days": 14,
+    "traffic_retention_days": 90,
+    "dns_retention_days": 90,
     "public_ip_cache_seconds": 1800,
     "fast_page_mode": True,
     "unifi_enabled": False,
@@ -338,12 +338,12 @@ def today():
 
 def range_days():
     value = request.args.get("range", "1d")
-    return {"1d": 1, "7d": 7, "30d": 30}.get(value, 1)
+    return {"1d": 1, "7d": 7, "30d": 30, "60d": 60, "90d": 90}.get(value, 1)
 
 
 def range_key():
     days = range_days()
-    return "30d" if days == 30 else "7d" if days == 7 else "1d"
+    return "90d" if days == 90 else "60d" if days == 60 else "30d" if days == 30 else "7d" if days == 7 else "1d"
 
 
 def range_start_day():
@@ -359,7 +359,7 @@ def range_query_suffix(extra=""):
 
 
 def time_picker():
-    options = [("1d", "Today"), ("7d", "7 Days"), ("30d", "30 Days")]
+    options = [("1d", "Today"), ("7d", "7 Days"), ("30d", "30 Days"), ("60d", "60 Days"), ("90d", "90 Days")]
     current = range_key()
     links = ""
     path = h(request.path)
@@ -2203,8 +2203,14 @@ def dashboard():
     active = blocked = dns_total = unique_domains = blocked_domains = 0
     blocked_pct = 0
     live_down_bps = live_up_bps = live_total_bps = 0
-    traffic_range_label = {"1d": "Today", "7d": "Last 7 Days", "30d": "Last 30 Days"}.get(range_key(), "Today")
-    dashboard_period = {"1d": "24h", "7d": "7d", "30d": "30d"}.get(range_key(), "24h")
+    traffic_range_label = {
+        "1d": "Today",
+        "7d": "Last 7 Days",
+        "30d": "Last 30 Days",
+        "60d": "Last 60 Days",
+        "90d": "Last 90 Days",
+    }.get(range_key(), "Today")
+    dashboard_period = {"1d": "24h", "7d": "7d", "30d": "30d", "60d": "60d", "90d": "90d"}.get(range_key(), "24h")
     protection_text = "LOADING"
     protection_class = "yellow"
     protection_detail = "Loading AdGuard status"
@@ -2252,7 +2258,25 @@ def dashboard():
   border:1px solid rgba(148,163,184,.2);
   border-radius:12px;
   padding:10px 12px;
+  position:relative;
 }}
+.dash-summary-loading {{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%, -50%);
+  padding:5px 10px;
+  border-radius:999px;
+  color:#9aa7bb;
+  background:rgba(7,17,38,.78);
+  border:1px solid rgba(91,168,255,.22);
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:.04em;
+  pointer-events:none;
+  z-index:2;
+}}
+.dash-summary-loading.hidden {{ display:none; }}
 .dash-ring {{
   width:96px;
   height:96px;
@@ -2342,6 +2366,7 @@ def dashboard():
     </form>
   </div>
   <div class="dash-summary">
+    <div id="dashboardSummaryLoading" class="dash-summary-loading">Loading...</div>
     <div id="dashboardBlockRing" class="dash-ring" title="DNS blocked share: {blocked_pct}%" style="background:conic-gradient(#ff526c 0 {blocked_pct}%, #00ddc7 {blocked_pct}% 100%);"></div>
     <a class="dash-card" href="/blocked"><div class="label">Total Blocked</div><span id="dashboardBlocked" class="big red">{blocked:,}</span><small>Blocked domains: <span id="dashboardBlockedDomains">{blocked_domains:,}</span></small></a>
     <a class="dash-card" href="/adguard"><div class="label">Protection</div><span id="dashboardProtection" class="big {protection_class}">{protection_text}</span><small id="dashboardProtectionDetail">{protection_detail}</small></a>
@@ -2407,6 +2432,8 @@ async function loadDashboardSummary() {{
       ring.title = "DNS blocked share: " + data.blocked_pct + "%";
       ring.style.background = "conic-gradient(#ff526c 0 " + data.blocked_pct + "%, #00ddc7 " + data.blocked_pct + "% 100%)";
     }}
+    const loading = document.getElementById("dashboardSummaryLoading");
+    if (loading) loading.classList.add("hidden");
   }} catch (error) {{
     console.log("Dashboard summary refresh failed:", error);
   }}
@@ -2771,7 +2798,7 @@ def unlock_device(ip):
     )
     if request.form.get("return_to") == "device":
         return_range = request.form.get("range", "1d")
-        if return_range not in ["1d", "7d", "30d"]:
+        if return_range not in ["1d", "7d", "30d", "60d", "90d"]:
             return_range = "1d"
         return redirect(f"/device/{ip}?range={return_range}")
     return redirect("/devices")
@@ -3309,7 +3336,7 @@ def api_history():
     period = request.args.get("period", "1h").strip().lower()
     ip = request.args.get("ip", "").strip()
 
-    if period not in ["1h", "24h", "7d", "30d"]:
+    if period not in ["1h", "24h", "7d", "30d", "60d", "90d"]:
         period = "1h"
 
     if period == "1h":
@@ -3321,6 +3348,12 @@ def api_history():
     elif period == "7d":
         bucket_expr = "day"
         since_clause = "day >= date('now','localtime','-7 days')"
+    elif period == "60d":
+        bucket_expr = "day"
+        since_clause = "day >= date('now','localtime','-60 days')"
+    elif period == "90d":
+        bucket_expr = "day"
+        since_clause = "day >= date('now','localtime','-90 days')"
     else:
         bucket_expr = "day"
         since_clause = "day >= date('now','localtime','-30 days')"
@@ -3456,6 +3489,8 @@ def history():
     <button class="history-btn" onclick="loadHistory('24h')">Last 24 Hours</button>
     <button class="history-btn" onclick="loadHistory('7d')">Last 7 Days</button>
     <button class="history-btn" onclick="loadHistory('30d')">Last 30 Days</button>
+    <button class="history-btn" onclick="loadHistory('60d')">Last 60 Days</button>
+    <button class="history-btn" onclick="loadHistory('90d')">Last 90 Days</button>
   </div>
 
   <div class="chart-box">
@@ -5104,8 +5139,8 @@ def settings():
         "lan_prefix": "LAN prefix used to identify local devices, for example 192.168.1.",
         "adguard_url": "AdGuard Home URL used for DNS stats and controls.",
         "collect_interval_seconds": "Seconds between measured traffic interval writes. Live speed freshness follows this value.",
-        "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 30 for the 30-day view.",
-        "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep.",
+        "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 90 for the 90-day view.",
+        "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep. Use 90 for the 90-day view.",
         "fast_page_mode": "Speeds up navigation by disabling dashboard background refresh and loading the traffic graph only when requested.",
         "auth_enabled": "Enable or disable the NetSpecter login screen.",
         "admin_user": "Username used to sign in to NetSpecter.",
