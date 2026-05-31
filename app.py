@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 import requests
-from flask import Flask, request, redirect, Response, session
+from flask import Flask, request, redirect, Response, session, g
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -62,6 +62,7 @@ CONFIG_PATH = CONFIG_ROOT / "config.json"
 DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
 UPDATE_LOG_PATH = DATA_ROOT / "update.log"
+REQUEST_TIMING_PATH = DATA_ROOT / "request_timings.log"
 SECRET_KEY_PATH = CONFIG_ROOT / "secret.key"
 SESSION_KEY_PATH = CONFIG_ROOT / "session.key"
 SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
@@ -446,6 +447,52 @@ def login_template(title, body):
 
 
 @app.before_request
+def start_request_timer():
+    g.request_started_at = time.perf_counter()
+    return None
+
+
+def record_request_timing(response):
+    started = getattr(g, "request_started_at", None)
+    if started is None:
+        return response
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    response.headers["X-NetSpecter-Render-Ms"] = str(elapsed_ms)
+    if elapsed_ms < 750:
+        return response
+    try:
+        REQUEST_TIMING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with REQUEST_TIMING_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ms": elapsed_ms,
+                "method": request.method,
+                "path": request.full_path.rstrip("?"),
+                "endpoint": request.endpoint or "",
+                "status": response.status_code,
+            }) + "\n")
+    except Exception as error:
+        print(f"Request timing log failed: {error}")
+    return response
+
+
+def recent_request_timings(limit=20):
+    if not REQUEST_TIMING_PATH.exists():
+        return []
+    try:
+        lines = REQUEST_TIMING_PATH.read_text(errors="replace").splitlines()[-limit:]
+        rows = []
+        for line in reversed(lines):
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+        return rows
+    except Exception:
+        return []
+
+
+@app.before_request
 def require_csrf_token():
     if request.method == "POST":
         expected = session.get("_csrf_token", "")
@@ -476,6 +523,7 @@ def require_login():
 
 @app.after_request
 def set_security_headers(response):
+    response = record_request_timing(response)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -1146,7 +1194,7 @@ def git_command(source_root, *args, timeout=20):
     return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
 
 
-def update_status(force=False):
+def update_status(force=False, fetch_remote=False):
     now = time.time()
     cached = UPDATE_STATUS_CACHE.get("data")
     if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 3600:
@@ -1158,7 +1206,8 @@ def update_status(force=False):
         UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
         return data
 
-    git_command(source, "fetch", "--quiet", "origin", timeout=30)
+    if fetch_remote:
+        git_command(source, "fetch", "--quiet", "origin", timeout=10)
     _rc, current, _err = git_command(source, "rev-parse", "--short", "HEAD")
     rc, latest, err = git_command(source, "rev-parse", "--short", "origin/main")
     if rc != 0:
@@ -1814,7 +1863,7 @@ async function refreshLiveSpeeds() {{
 
 // Start live polling only on pages with live speed widgets.
 if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]')) {{
-  setInterval(refreshLiveSpeeds, 2000);
+  setInterval(refreshLiveSpeeds, 10000);
   refreshLiveSpeeds();
 }}
 
@@ -1923,7 +1972,7 @@ def api_live():
 
 @app.route("/api/update-status")
 def api_update_status():
-    return update_status()
+    return update_status(fetch_remote=False)
 
 
 @app.route("/api/dashboard-summary")
@@ -5042,7 +5091,8 @@ def system():
 
     health = system_health()
     c = cfg()
-    status = update_status(force=request.args.get("check") == "1")
+    force_update_check = request.args.get("check") == "1"
+    status = update_status(force=force_update_check, fetch_remote=force_update_check)
     if request.args.get("update") == "started":
         update_notice = '<div class="setup-ok">Update started. This page may briefly disconnect while NetSpecter restarts.</div>'
     elif request.args.get("update") == "failed":
@@ -5062,6 +5112,17 @@ def system():
             update_log = UPDATE_LOG_PATH.read_text(errors="replace")[-5000:]
         except Exception:
             update_log = "Update log could not be read."
+    timing_rows = ""
+    for row in recent_request_timings(20):
+        timing_rows += f"""
+<tr>
+  <td>{h(row.get('ts', ''))}</td>
+  <td><b>{h(row.get('ms', ''))} ms</b></td>
+  <td>{h(row.get('method', ''))}</td>
+  <td><span class="mono">{h(row.get('path', ''))}</span></td>
+  <td>{h(row.get('endpoint', ''))}</td>
+  <td>{h(row.get('status', ''))}</td>
+</tr>"""
 
     body = f"""
 {topbar('System')}
@@ -5093,6 +5154,14 @@ def system():
   </form>
   <p class="sub">The update runs in the background with <span class="mono">git pull --ff-only</span> and then the installer. NetSpecter may restart during the update.</p>
   <pre>{h(update_log) if update_log else 'No update log yet.'}</pre>
+</div>
+<div class="panel" id="performance">
+  <h2>Slow Request Timing</h2>
+  <p class="sub">NetSpecter records page/API requests that take longer than 750 ms. Use this to see what is causing slow clicks.</p>
+  <table>
+    <tr><th>Time</th><th>Duration</th><th>Method</th><th>Path</th><th>Endpoint</th><th>Status</th></tr>
+    {timing_rows or '<tr><td colspan="6">No slow requests recorded yet.</td></tr>'}
+  </table>
 </div>
 """
     return shell("System", body, "System")
