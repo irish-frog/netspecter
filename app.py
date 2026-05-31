@@ -2180,8 +2180,9 @@ def dashboard():
 .dash-app-row em {{ color:#b7c7d8; font-style:normal; }}
 .dash-chart {{ height:168px; }}
 .dash-chart canvas {{ max-height:168px; }}
-.fast-mode-note {{ color:#9aa7bb; font-size:13px; font-weight:700; margin-bottom:10px; }}
+.fast-mode-note {{ color:#9aa7bb; font-size:13px; font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
 .fast-mode-note button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:8px 12px; cursor:pointer; font-weight:800; margin-left:8px; }}
+.fast-mode-note span {{ color:#8ea2bd; font-size:12px; }}
 .live-refresh-note {{ width:100%; color:#8ea2bd; font-size:12px; font-weight:800; text-align:right; margin-bottom:-2px; }}
 .live-refresh-note span {{ color:#5ba8ff; }}
 .legend {{ display:flex; align-items:center; gap:18px; color:#cbd6e3; margin-bottom:8px; flex-wrap:wrap; }}
@@ -2232,7 +2233,7 @@ def dashboard():
   <div class="dash-two">
     <div class="dash-panel">
       <h2>Network Traffic</h2>
-      {'<div class="fast-mode-note">Fast mode is on. Traffic graph loads only when requested.<button onclick="loadDashboardTraffic()">Load Graph</button></div>' if fast_page_mode else ''}
+      {'<div class="fast-mode-note">Fast mode is on. Graph loads once and only refreshes when requested.<button id="dashboardGraphRefresh" type="button">Refresh Graph</button><span id="dashboardGraphStatus"></span></div>' if fast_page_mode else ''}
       <div class="legend">
         <span><i class="fa-solid fa-circle blue"></i> Download / Downstream</span>
         <span><i class="fa-solid fa-circle purple"></i> Upload / Upstream</span>
@@ -2260,6 +2261,10 @@ def dashboard():
 <script>
 let dashboardTrafficChart = null;
 const dashboardFastMode = {json.dumps(fast_page_mode)};
+function setDashboardGraphStatus(message) {{
+  const status = document.getElementById("dashboardGraphStatus");
+  if (status) status.textContent = message || "";
+}}
 async function loadDashboardSummary() {{
   try {{
     const response = await fetch("/api/dashboard-summary?range={range_key()}", {{cache: "no-store"}});
@@ -2287,34 +2292,53 @@ async function loadDashboardSummary() {{
   }}
 }}
 async function loadDashboardTraffic() {{
-  const response = await fetch("/api/history?period={dashboard_period}", {{cache: "no-store"}});
-  const data = await response.json();
-  const context = document.getElementById("dashboardTrafficChart").getContext("2d");
-  if (dashboardTrafficChart) dashboardTrafficChart.destroy();
-  dashboardTrafficChart = new Chart(context, {{
-    type: "bar",
-    data: {{
-      labels: data.labels,
-      datasets: [
-        {{ label: "Download", data: data.downloaded, borderColor: "#18aaff", backgroundColor: "rgba(24,170,255,.72)", borderWidth: 1 }},
-        {{ label: "Upload", data: data.uploaded, borderColor: "#9c6cff", backgroundColor: "rgba(156,108,255,.72)", borderWidth: 1 }}
-      ]
-    }},
-    options: {{
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        y: {{ beginAtZero: true, title: {{ display: true, text: "MB" }} }},
-        x: {{ ticks: {{ maxTicksLimit: 8 }} }}
-      }}
+  try {{
+    setDashboardGraphStatus("loading...");
+    if (typeof Chart === "undefined") {{
+      setDashboardGraphStatus("chart library not loaded");
+      return;
     }}
-  }});
+    const canvas = document.getElementById("dashboardTrafficChart");
+    if (!canvas) return;
+    const response = await fetch("/api/history?period={dashboard_period}", {{cache: "no-store"}});
+    if (!response.ok) {{
+      setDashboardGraphStatus("graph request failed");
+      return;
+    }}
+    const data = await response.json();
+    const context = canvas.getContext("2d");
+    if (dashboardTrafficChart) dashboardTrafficChart.destroy();
+    dashboardTrafficChart = new Chart(context, {{
+      type: "bar",
+      data: {{
+        labels: data.labels || [],
+        datasets: [
+          {{ label: "Download", data: data.downloaded || [], borderColor: "#18aaff", backgroundColor: "rgba(24,170,255,.72)", borderWidth: 1 }},
+          {{ label: "Upload", data: data.uploaded || [], borderColor: "#9c6cff", backgroundColor: "rgba(156,108,255,.72)", borderWidth: 1 }}
+        ]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {{ legend: {{ display: false }} }},
+        scales: {{
+          y: {{ beginAtZero: true, title: {{ display: true, text: "MB" }} }},
+          x: {{ ticks: {{ maxTicksLimit: 8 }} }}
+        }}
+      }}
+    }});
+    setDashboardGraphStatus("updated");
+  }} catch (error) {{
+    console.log("Dashboard traffic graph failed:", error);
+    setDashboardGraphStatus("graph failed");
+  }}
 }}
+const dashboardGraphRefresh = document.getElementById("dashboardGraphRefresh");
+if (dashboardGraphRefresh) dashboardGraphRefresh.addEventListener("click", loadDashboardTraffic);
+loadDashboardTraffic();
 if (!dashboardFastMode) {{
   loadDashboardSummary();
-  loadDashboardTraffic();
   setInterval(loadDashboardSummary, 10000);
   setInterval(loadDashboardTraffic, 30000);
 }}
