@@ -940,6 +940,17 @@ def cache_set(key, value):
     save_json(CACHE_PATH, data)
 
 
+def cached_query(key, max_age, sql, params=()):
+    """Cache short-lived page query results to make navigation feel lighter."""
+    cached = cache_get(f"query:{key}", max_age)
+    if cached is not None:
+        return cached
+
+    rows = [dict(row) for row in query(sql, params)]
+    cache_set(f"query:{key}", rows)
+    return rows
+
+
 def public_ip(refresh=True):
     c = cfg()
     cached = cache_get("public_ip", int(c.get("public_ip_cache_seconds", 1800)))
@@ -1270,7 +1281,9 @@ def latest_hosts(limit=100):
         params.extend(ignore)
     params.append(limit)
 
-    return query(
+    return cached_query(
+        f"latest_hosts:{today()}:{limit}:{','.join(ignore)}",
+        10,
         f"""
         WITH usage AS (
             SELECT
@@ -1356,7 +1369,9 @@ def totals():
         placeholders = ",".join(["?"] * len(ignore))
         ignore_clause = f"AND t.ip NOT IN ({placeholders})"
         params.extend(ignore)
-    rows = query(
+    rows = cached_query(
+        f"totals_usage:{start_day}:{','.join(ignore)}",
+        10,
         f"""
         WITH usage AS (
             SELECT
@@ -1391,7 +1406,9 @@ def totals():
     up = round(sum(float(r["uploaded_mb"] or 0) for r in rows), 2)
     total = round(sum(float(r["total_mb"] or 0) for r in rows), 2)
 
-    blocked = query(
+    blocked = cached_query(
+        f"totals_blocked:{start_day}",
+        10,
         """
         SELECT COUNT(*) AS total
         FROM dns_querylog
@@ -1402,7 +1419,9 @@ def totals():
 
     blocked_total = int(blocked[0]["total"] or 0) if blocked else 0
 
-    topcat = query(
+    topcat = cached_query(
+        f"totals_topcat:{start_day}",
+        10,
         """
         SELECT category, COUNT(*) AS q
         FROM dns_querylog
@@ -1542,7 +1561,10 @@ def is_noise(domain):
 
 
 def top_categories(limit=8):
-    return query(
+    start_day = range_start_day()
+    return cached_query(
+        f"top_categories:{start_day}:{limit}",
+        10,
         """
         SELECT category, COUNT(*) AS total
         FROM dns_querylog
@@ -1551,13 +1573,16 @@ def top_categories(limit=8):
         ORDER BY total DESC
         LIMIT ?
         """,
-        (range_start_day(), limit),
+        (start_day, limit),
     )
 
 
 def estimated_app_usage(limit=10):
     """Return DNS-attributed measured bytes, kept separate from total device usage."""
-    return query(
+    start_day = range_start_day()
+    return cached_query(
+        f"estimated_app_usage:{start_day}:{limit}",
+        10,
         """
         SELECT
             e.category,
@@ -1574,7 +1599,7 @@ def estimated_app_usage(limit=10):
         ORDER BY total_mb DESC
         LIMIT ?
         """,
-        (range_start_day(), limit),
+        (start_day, limit),
     )
 
 
@@ -3173,7 +3198,9 @@ def api_history():
         since_clause = "day >= date('now','localtime','-30 days')"
 
     if ip:
-        rows = query(
+        rows = cached_query(
+            f"api_history:{period}:ip:{ip}",
+            10,
             f"""
             SELECT
                 {bucket_expr} AS bucket,
@@ -3189,24 +3216,17 @@ def api_history():
             (ip,),
         )
     else:
-        rows = query(
+        rows = cached_query(
+            f"api_history:{period}:network",
+            10,
             f"""
             SELECT
-                bucket,
-                SUM(downloaded) AS downloaded,
-                SUM(uploaded) AS uploaded,
-                SUM(total) AS total
-            FROM (
-                SELECT
-                    {bucket_expr} AS bucket,
-                    ip,
-                    SUM(downloaded_mb) AS downloaded,
-                    SUM(uploaded_mb) AS uploaded,
-                    SUM(total_mb) AS total
-                FROM traffic_intervals
-                WHERE {since_clause}
-                GROUP BY bucket, ip
-            )
+                {bucket_expr} AS bucket,
+                SUM(downloaded_mb) AS downloaded,
+                SUM(uploaded_mb) AS uploaded,
+                SUM(total_mb) AS total
+            FROM traffic_intervals
+            WHERE {since_clause}
             GROUP BY bucket
             ORDER BY bucket ASC
             """
@@ -3427,7 +3447,9 @@ def traffic():
     sort_col = sort_map.get(sort, "total_mb")
     direction_sql = "ASC" if direction == "asc" else "DESC"
 
-    rows = query(
+    rows = cached_query(
+        f"traffic_rows:{start_day}:{mode}:{sort}:{direction}",
+        10,
         f"""
         WITH usage AS (
             SELECT
@@ -3456,6 +3478,7 @@ def traffic():
         """,
         (start_day,),
     )
+    live_speeds = live_all_host_speeds()
 
     def sort_link(label, key):
         next_dir = "desc"
@@ -3474,7 +3497,7 @@ def traffic():
   <td>{fmt_mb(r['downloaded_mb'])}</td>
   <td>{fmt_mb(r['uploaded_mb'])}</td>
   <td>{fmt_mb(r['total_mb'])}</td>
-  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_bits_as_bytes(live_host_speed(str(r['ip'])).get('total_bps', 0))}</span></td>
+  <td><span data-live-ip="{h(r['ip'])}" data-live-field="total">{fmt_bits_as_bytes(live_speeds.get(str(r['ip']), {}).get('total_bps', 0))}</span></td>
 </tr>
 """
 
