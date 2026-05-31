@@ -1822,7 +1822,7 @@ function saveDeviceRow(button) {{
 // ---------------------------------------------------
 // Live speed refresh engine
 // ---------------------------------------------------
-// Polls /api/live every 2 seconds and updates matching
+// Polls /api/live on a visible timer and updates matching
 // elements without refreshing the page.
 //
 // Per-device fields:
@@ -1865,9 +1865,24 @@ async function refreshLiveSpeeds() {{
 
 // Start live polling only on pages with live speed widgets.
 const netSpecterFastMode = {json.dumps(fast_page_mode)};
-if (!netSpecterFastMode && document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]')) {{
-  setInterval(refreshLiveSpeeds, 10000);
+const netSpecterLiveIntervalSeconds = netSpecterFastMode ? 30 : 10;
+let netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
+function updateLiveCountdown() {{
+  document.querySelectorAll('[data-live-countdown]').forEach(el => {{
+    el.textContent = netSpecterLiveCountdown + "s";
+  }});
+}}
+if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]')) {{
   refreshLiveSpeeds();
+  updateLiveCountdown();
+  setInterval(() => {{
+    netSpecterLiveCountdown -= 1;
+    if (netSpecterLiveCountdown <= 0) {{
+      netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
+      refreshLiveSpeeds();
+    }}
+    updateLiveCountdown();
+  }}, 1000);
 }}
 
 async function refreshUpdateStatusBadge() {{
@@ -2167,6 +2182,8 @@ def dashboard():
 .dash-chart canvas {{ max-height:168px; }}
 .fast-mode-note {{ color:#9aa7bb; font-size:13px; font-weight:700; margin-bottom:10px; }}
 .fast-mode-note button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:8px 12px; cursor:pointer; font-weight:800; margin-left:8px; }}
+.live-refresh-note {{ width:100%; color:#8ea2bd; font-size:12px; font-weight:800; text-align:right; margin-bottom:-2px; }}
+.live-refresh-note span {{ color:#5ba8ff; }}
 .legend {{ display:flex; align-items:center; gap:18px; color:#cbd6e3; margin-bottom:8px; flex-wrap:wrap; }}
 .legend .legend-live {{ margin-left:auto; font-size:16px; }}
 .chart-legend {{ display:flex; align-items:center; gap:14px; margin-top:8px; color:#b8c7da; font-size:13px; font-weight:800; }}
@@ -2219,6 +2236,7 @@ def dashboard():
       <div class="legend">
         <span><i class="fa-solid fa-circle blue"></i> Download / Downstream</span>
         <span><i class="fa-solid fa-circle purple"></i> Upload / Upstream</span>
+        <small class="live-refresh-note">next live update in <span data-live-countdown>{30 if fast_page_mode else 10}s</span></small>
         <b class="blue legend-live">Live collector: DL <span data-live-network="1" data-live-field="down">{fmt_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_bits_as_bytes(live_total_bps)}</span></b>
       </div>
       <div class="dash-chart"><canvas id="dashboardTrafficChart"></canvas></div>
