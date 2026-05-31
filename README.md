@@ -18,11 +18,14 @@ It combines:
 
 * Real-time device traffic visibility
 * DNS analytics from AdGuard Home
-* Device discovery, AdGuard client names, and vendor classification
-* Historical traffic views
+* Device discovery, AdGuard client names, UniFi client imports, and vendor classification
+* Historical traffic views up to 90 days when retention is configured
 * Bridge-mode kernel traffic accounting
+* Speed test history with optional scheduled tests
+* IDS alert review from Suricata logs, with exclusions, bans, and SMTP alerting
+* Optional SNMP polling and MQTT subscriptions for device telemetry
 * Login-protected dashboard
-* CSV exports and service health checks
+* CSV exports, service health checks, and one-click collector restart when stale
 
 ---
 
@@ -226,10 +229,11 @@ The installer:
 
 * Updates Debian and installs initial setup tools
 * Installs AdGuard Home and continues while its browser setup remains available
+* Installs bridge, packet capture, nftables, SNMP, speed test, and Python runtime dependencies
 * Installs NetSpecter to `/opt/netspecter`
 * Creates config in `/etc/netspecter`
 * Stores runtime data in `/var/lib/netspecter`
-* Installs systemd services and watchdog timer
+* Installs systemd services, watchdog timer, and scheduled speed test timer
 
 ---
 
@@ -263,10 +267,53 @@ Configure:
 * LAN prefix
 * Live traffic interface, usually `br0`
 * AdGuard URL/user/password
-* Traffic retention days, use `30` to keep the full 30-day traffic view
-* DNS/App retention days for AdGuard-derived application history
+* Traffic retention days, use `90` to keep the full 90-day traffic view
+* DNS/App retention days, use `90` to keep the full 90-day application history
+* Optional UniFi, SNMP, MQTT, speed test, and IDS/email integrations
 
 Service passwords are encrypted in `/etc/netspecter/config.json` after saving Settings.
+
+Existing appliances keep their saved retention values during upgrades. To use the 60-day and 90-day range buttons on upgraded installs, open Settings and raise both retention values to `90`.
+
+---
+
+## Optional Integrations
+
+### UniFi Device Discovery
+
+If you own a UniFi console, NetSpecter can import client names, IP addresses, and MAC addresses from the UniFi Network API connector. This helps Devices show friendly names even when a client's traffic does not cross the NetSpecter bridge.
+
+Configure it from Integrations:
+
+* Enable UniFi Device Discovery
+* Enter the connector URL for your UniFi console or local gateway
+* Enter the API key
+* Use Find Site Automatically, or enter the site ID manually
+* Enable the self-signed certificate option only for local UniFi gateways that need it
+
+The UniFi API key is encrypted in NetSpecter's local config and is never committed to GitHub.
+
+### SNMP And MQTT Telemetry
+
+NetSpecter can pull telemetry from existing devices using SNMP and subscribe to an existing MQTT broker. It does not act as an SNMP server or MQTT broker.
+
+Use Settings to configure SNMP targets and MQTT topics, then open Telemetry to see the latest readings. See the [SNMP and MQTT Telemetry wiki page](wiki/SNMP-MQTT-Telemetry.md) for setup notes and troubleshooting.
+
+### Speed Tests
+
+Manual speed tests are stored automatically. Optional scheduled speed tests can run up to five times per day and are shown in Speed Tests history. Scheduled tests consume internet data, so they are disabled by default.
+
+### IDS Alerts
+
+If Suricata is installed on the appliance and writing `/var/log/suricata/fast.log`, NetSpecter can show recent IDS alerts, summarize noisy signatures, ignore expected source IPs, show only unknown source IPs, add IPs to a local nftables ban list, and send SMTP email notifications.
+
+---
+
+## Updates
+
+When NetSpecter detects a newer GitHub version, Dashboard shows an update button near the range controls. The System page can also run the same update flow.
+
+The update action performs a fast-forward Git pull and reruns the installer while preserving `/etc/netspecter/config.json`.
 
 ### Destination Map Privacy Note
 
