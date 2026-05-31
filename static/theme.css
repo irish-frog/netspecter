@@ -115,6 +115,11 @@ body {
   background: linear-gradient(180deg, #020817, #030a19 44%, #020817);
 }
 
+.content.loading {
+  opacity: .62;
+  cursor: progress;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;

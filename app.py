@@ -1672,6 +1672,12 @@ def shell(title, body, active="Dashboard"):
     c = cfg()
     fast_page_mode = bool(c.get("fast_page_mode", True))
 
+    if request.args.get("_partial") == "1" or request.headers.get("X-NetSpecter-Partial") == "1":
+        response = Response(body)
+        response.headers["X-NetSpecter-Title"] = title
+        response.headers["X-NetSpecter-Active"] = active
+        return response
+
     # ---------------------------------------------------
     # Sidebar navigation items
     # ---------------------------------------------------
@@ -1700,10 +1706,12 @@ def shell(title, body, active="Dashboard"):
     ]
 
     nav = ""
+    app_shell_pages = {"Dashboard", "Devices", "Traffic"}
 
     for label, url, icon in nav_items:
         cls = "active" if label == active else ""
-        nav += f'<a class="{cls}" href="{url}"><i class="fa-solid {icon}"></i>{label}</a>'
+        shell_attr = ' data-app-shell="1"' if label in app_shell_pages else ""
+        nav += f'<a class="{cls}" href="{url}"{shell_attr}><i class="fa-solid {icon}"></i>{label}</a>'
 
     # ---------------------------------------------------
     # Standard page shell
@@ -1717,7 +1725,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260526m">
+<link rel="stylesheet" href="/static/theme.css?v=20260531b">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -1741,7 +1749,7 @@ def shell(title, body, active="Dashboard"):
      Page-specific content is injected here.
      =================================================== -->
 
-<div class="content">
+<div class="content" id="appContent">
 {body}
 </div>
 
@@ -1844,6 +1852,85 @@ function saveDeviceRow(button) {{
   form.submit();
 }}
 
+function runContentScripts(container) {{
+  container.querySelectorAll("script").forEach(oldScript => {{
+    const script = document.createElement("script");
+    script.type = "module";
+    if (oldScript.src) {{
+      script.src = oldScript.src;
+    }} else {{
+      script.textContent = oldScript.textContent;
+    }}
+    oldScript.replaceWith(script);
+  }});
+}}
+
+async function loadAppShellPage(url, pushState = true) {{
+  const content = document.getElementById("appContent");
+  if (!content) {{
+    window.location.href = url;
+    return;
+  }}
+
+  const requestUrl = new URL(url, window.location.origin);
+  requestUrl.searchParams.set("_partial", "1");
+  content.classList.add("loading");
+
+  try {{
+    const response = await fetch(requestUrl.toString(), {{
+      cache: "no-store",
+      headers: {{"X-NetSpecter-Partial": "1"}}
+    }});
+
+    if (!response.ok) throw new Error("HTTP " + response.status);
+
+    const html = await response.text();
+    content.innerHTML = html;
+    runContentScripts(content);
+
+    const title = response.headers.get("X-NetSpecter-Title");
+    const active = response.headers.get("X-NetSpecter-Active");
+    if (title) document.title = title;
+
+    document.querySelectorAll(".nav a").forEach(link => {{
+      link.classList.toggle("active", link.textContent.trim() === active);
+    }});
+
+    if (pushState) {{
+      history.pushState({{appShell: true}}, "", url);
+    }}
+
+    refreshUpdateStatusBadge();
+    refreshLiveSpeeds();
+    netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
+    updateLiveCountdown();
+  }} catch (error) {{
+    console.log("App shell navigation failed:", error);
+    window.location.href = url;
+  }} finally {{
+    content.classList.remove("loading");
+  }}
+}}
+
+document.addEventListener("click", event => {{
+  const link = event.target.closest('a[data-app-shell="1"]');
+  if (!link || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  if (link.target && link.target !== "_self") return;
+  event.preventDefault();
+  loadAppShellPage(link.href);
+}});
+
+window.addEventListener("popstate", () => {{
+  const activeLink = Array.from(document.querySelectorAll('a[data-app-shell="1"]')).find(link => {{
+    return new URL(link.href).pathname === window.location.pathname;
+  }});
+  if (activeLink) {{
+    loadAppShellPage(window.location.href, false);
+  }} else {{
+    window.location.reload();
+  }}
+}});
+
 // ---------------------------------------------------
 // Live speed refresh engine
 // ---------------------------------------------------
@@ -1892,23 +1979,27 @@ async function refreshLiveSpeeds() {{
 const netSpecterFastMode = {json.dumps(fast_page_mode)};
 const netSpecterLiveIntervalSeconds = netSpecterFastMode ? 30 : 10;
 let netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
+function hasLiveSpeedWidgets() {{
+  return !!document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]');
+}}
 function updateLiveCountdown() {{
   document.querySelectorAll('[data-live-countdown]').forEach(el => {{
     el.textContent = netSpecterLiveCountdown + "s";
   }});
 }}
-if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]')) {{
+if (hasLiveSpeedWidgets()) {{
   refreshLiveSpeeds();
   updateLiveCountdown();
-  setInterval(() => {{
-    netSpecterLiveCountdown -= 1;
-    if (netSpecterLiveCountdown <= 0) {{
-      netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
-      refreshLiveSpeeds();
-    }}
-    updateLiveCountdown();
-  }}, 1000);
 }}
+setInterval(() => {{
+  if (!hasLiveSpeedWidgets()) return;
+  netSpecterLiveCountdown -= 1;
+  if (netSpecterLiveCountdown <= 0) {{
+    netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
+    refreshLiveSpeeds();
+  }}
+  updateLiveCountdown();
+}}, 1000);
 
 async function refreshUpdateStatusBadge() {{
   const badge = document.getElementById("updateStatusBadge");
