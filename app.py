@@ -1977,7 +1977,7 @@ async function refreshLiveSpeeds() {{
 
 // Start live polling only on pages with live speed widgets.
 const netSpecterFastMode = {json.dumps(fast_page_mode)};
-const netSpecterLiveIntervalSeconds = netSpecterFastMode ? 30 : 10;
+const netSpecterLiveIntervalSeconds = 5;
 let netSpecterLiveCountdown = netSpecterLiveIntervalSeconds;
 function hasLiveSpeedWidgets() {{
   return !!document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]');
@@ -2324,9 +2324,6 @@ def dashboard():
 .dash-app-row em {{ color:#b7c7d8; font-style:normal; }}
 .dash-chart {{ height:168px; }}
 .dash-chart canvas {{ max-height:168px; }}
-.fast-mode-note {{ color:#9aa7bb; font-size:13px; font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-.fast-mode-note button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:8px 12px; cursor:pointer; font-weight:800; margin-left:8px; }}
-.fast-mode-note span {{ color:#8ea2bd; font-size:12px; }}
 .live-refresh-note {{ width:100%; color:#8ea2bd; font-size:12px; font-weight:800; text-align:right; margin-bottom:-2px; }}
 .live-refresh-note span {{ color:#5ba8ff; }}
 .legend {{ display:flex; align-items:center; gap:18px; color:#cbd6e3; margin-bottom:8px; flex-wrap:wrap; }}
@@ -2378,11 +2375,10 @@ def dashboard():
   <div class="dash-two">
     <div class="dash-panel">
       <h2>Network Traffic</h2>
-      {'<div class="fast-mode-note">Fast mode is on. Graph loads once and only refreshes when requested.<button id="dashboardGraphRefresh" type="button">Refresh Graph</button><span id="dashboardGraphStatus"></span></div>' if fast_page_mode else ''}
       <div class="legend">
         <span><i class="fa-solid fa-circle blue"></i> Download / Downstream</span>
         <span><i class="fa-solid fa-circle purple"></i> Upload / Upstream</span>
-        <small class="live-refresh-note">next live update in <span data-live-countdown>{30 if fast_page_mode else 10}s</span></small>
+        <small class="live-refresh-note">next live update in <span data-live-countdown>5s</span></small>
         <b class="blue legend-live">Live collector: DL <span data-live-network="1" data-live-field="down">{fmt_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_bits_as_bytes(live_total_bps)}</span></b>
       </div>
       <div class="dash-chart"><canvas id="dashboardTrafficChart"></canvas></div>
@@ -2406,10 +2402,6 @@ def dashboard():
 <script>
 let dashboardTrafficChart = null;
 const dashboardFastMode = {json.dumps(fast_page_mode)};
-function setDashboardGraphStatus(message) {{
-  const status = document.getElementById("dashboardGraphStatus");
-  if (status) status.textContent = message || "";
-}}
 async function loadDashboardSummary() {{
   try {{
     const response = await fetch("/api/dashboard-summary?range={range_key()}", {{cache: "no-store"}});
@@ -2440,16 +2432,15 @@ async function loadDashboardSummary() {{
 }}
 async function loadDashboardTraffic() {{
   try {{
-    setDashboardGraphStatus("loading...");
     if (typeof Chart === "undefined") {{
-      setDashboardGraphStatus("chart library not loaded");
+      console.log("Dashboard chart library not loaded");
       return;
     }}
     const canvas = document.getElementById("dashboardTrafficChart");
     if (!canvas) return;
     const response = await fetch("/api/history?period={dashboard_period}", {{cache: "no-store"}});
     if (!response.ok) {{
-      setDashboardGraphStatus("graph request failed");
+      console.log("Dashboard traffic graph request failed");
       return;
     }}
     const data = await response.json();
@@ -2475,10 +2466,8 @@ async function loadDashboardTraffic() {{
         }}
       }}
     }});
-    setDashboardGraphStatus("updated");
   }} catch (error) {{
     console.log("Dashboard traffic graph failed:", error);
-    setDashboardGraphStatus("graph failed");
   }}
 }}
 async function loadDashboardApps() {{
@@ -2510,8 +2499,6 @@ async function loadDashboardHealth() {{
     console.log("Dashboard health refresh failed:", error);
   }}
 }}
-const dashboardGraphRefresh = document.getElementById("dashboardGraphRefresh");
-if (dashboardGraphRefresh) dashboardGraphRefresh.addEventListener("click", loadDashboardTraffic);
 loadDashboardSummary();
 loadDashboardApps();
 loadDashboardHealth();
