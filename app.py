@@ -1179,6 +1179,17 @@ def restart_collector_service():
     return collector_service_action("restart")
 
 
+@app.route("/collector/restart", methods=["POST"])
+def restart_collector():
+    ok = restart_collector_service()
+    return_to = request.form.get("return_to", "/system")
+    if not return_to.startswith("/"):
+        return_to = "/system"
+    separator = "&" if "?" in return_to else "?"
+    status = "restarted" if ok else "restart_failed"
+    return redirect(f"{return_to}{separator}collector={status}")
+
+
 def source_checkout_root():
     candidates = [
         os.environ.get("NETSPECTER_SOURCE_ROOT"),
@@ -1983,9 +1994,7 @@ function hasLiveSpeedWidgets() {{
   return !!document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]');
 }}
 function updateLiveCountdown() {{
-  document.querySelectorAll('[data-live-countdown]').forEach(el => {{
-    el.textContent = netSpecterLiveCountdown + "s";
-  }});
+  return;
 }}
 if (hasLiveSpeedWidgets()) {{
   refreshLiveSpeeds();
@@ -2164,14 +2173,38 @@ def dashboard_app_rows():
 
 
 def dashboard_health_cards(health):
+    if health["collector_state"] == "OK":
+        collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="green">{health['collector_state']}</b></div></div>"""
+    else:
+        collector_card = f"""
+<form class="dash-card slim collector-restart-card" method="post" action="/collector/restart">
+  {csrf_input()}
+  <input type="hidden" name="return_to" value="/">
+  <button type="submit"><i class="fa-solid fa-rotate"></i><div><span>Collector</span><b class="yellow">{health['collector_state']}</b><small>Click to restart</small></div></button>
+</form>"""
     return f"""
 <div class="dash-card slim"><i class="fa-solid fa-wave-square"></i><div><span>CPU</span><b class="blue">{health['cpu']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-microchip purple"></i><div><span>Memory</span><b class="purple">{health['mem']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-hard-drive"></i><div><span>Disk / HDD</span><b class="{'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-database"></i><div><span>Database</span><b class="teal">{health['db_size']} MB</b></div></div>
-<div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="{'green' if health['collector_state'] == 'OK' else 'yellow'}">{health['collector_state']}</b></div></div>
+{collector_card}
 <div class="dash-card slim"><i class="fa-regular fa-clock"></i><div><span>Uptime</span><b>{health['uptime']}</b></div></div>
 """
+
+
+def collector_system_card(health):
+    if health["collector_state"] == "OK":
+        return f"""<div class="card"><div class="label">Collector</div><span class="big green">{health['collector_state']}</span></div>"""
+    return f"""
+<form class="card" method="post" action="/collector/restart">
+  {csrf_input()}
+  <input type="hidden" name="return_to" value="/system">
+  <button type="submit" style="background:none; border:0; padding:0; margin:0; width:100%; min-height:82px; text-align:left; color:inherit; cursor:pointer;">
+    <div class="label">Collector</div>
+    <span class="big yellow">{health['collector_state']}</span>
+    <small>Click to restart</small>
+  </button>
+</form>"""
 
 
 @app.route("/api/dashboard-apps")
@@ -2249,6 +2282,31 @@ def dashboard():
 }}
 .dash-card.slim span {{ display:block; color:#9aa7bb; font-size:12px; font-weight:800; }}
 .dash-card.slim b {{ font-size:18px; }}
+.collector-restart-card {{ margin:0; }}
+.collector-restart-card button {{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  width:100%;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:inherit;
+  text-align:left;
+  cursor:pointer;
+  font:inherit;
+}}
+.collector-restart-card button i {{
+  font-size:22px;
+  color:#f8c84e;
+  width:38px;
+  height:38px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  background:#1c2a41;
+}}
+.collector-restart-card small {{ display:block; color:#9aa7bb; font-size:11px; margin-top:3px; }}
 .dash-summary {{
   display:grid;
   grid-template-columns: 120px repeat(4, 1fr) 116px;
@@ -2324,8 +2382,6 @@ def dashboard():
 .dash-app-row em {{ color:#b7c7d8; font-style:normal; }}
 .dash-chart {{ height:168px; }}
 .dash-chart canvas {{ max-height:168px; }}
-.live-refresh-note {{ width:100%; color:#8ea2bd; font-size:12px; font-weight:800; text-align:right; margin-bottom:-2px; }}
-.live-refresh-note span {{ color:#5ba8ff; }}
 .legend {{ display:flex; align-items:center; gap:18px; color:#cbd6e3; margin-bottom:8px; flex-wrap:wrap; }}
 .legend .legend-live {{ margin-left:auto; font-size:16px; }}
 .chart-legend {{ display:flex; align-items:center; gap:14px; margin-top:8px; color:#b8c7da; font-size:13px; font-weight:800; }}
@@ -2378,8 +2434,7 @@ def dashboard():
       <div class="legend">
         <span><i class="fa-solid fa-circle blue"></i> Download / Downstream</span>
         <span><i class="fa-solid fa-circle purple"></i> Upload / Upstream</span>
-        <small class="live-refresh-note">next live update in <span data-live-countdown>5s</span></small>
-        <b class="blue legend-live">Live collector: DL <span data-live-network="1" data-live-field="down">{fmt_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_bits_as_bytes(live_total_bps)}</span></b>
+        <b class="blue legend-live">DL <span data-live-network="1" data-live-field="down">{fmt_bits_as_bytes(live_down_bps)}</span> | UL <span data-live-network="1" data-live-field="up">{fmt_bits_as_bytes(live_up_bps)}</span> | Total <span data-live-network="1" data-live-field="total">{fmt_bits_as_bytes(live_total_bps)}</span></b>
       </div>
       <div class="dash-chart"><canvas id="dashboardTrafficChart"></canvas></div>
       <div class="chart-legend">
@@ -4782,6 +4837,19 @@ def health_page():
     ]
     cards = ""
     for name, ok, detail in services:
+        if name == "Collector" and not ok:
+            cards += f"""
+<form class="card" method="post" action="/collector/restart">
+  {csrf_input()}
+  <input type="hidden" name="return_to" value="/health">
+  <button type="submit" style="background:none; border:0; padding:0; margin:0; width:100%; min-height:82px; text-align:left; color:inherit; cursor:pointer;">
+    <div class="label">{h(name)}</div>
+    <span class="big red">Check</span>
+    <small>{h(detail)} - click to restart</small>
+  </button>
+</form>
+"""
+            continue
         cards += f"""
 <div class="card">
   <div class="label">{h(name)}</div>
@@ -4789,8 +4857,14 @@ def health_page():
   <small>{h(detail)}</small>
 </div>
 """
+    notice = ""
+    if request.args.get("collector") == "restarted":
+        notice = '<div class="setup-ok">Collector restart requested.</div>'
+    elif request.args.get("collector") == "restart_failed":
+        notice = '<div class="setup-warning">Collector restart failed. Check System logs.</div>'
     body = f"""
 {topbar('Service Health')}
+{notice}
 <div class="grid">{cards}</div>
 """
     return shell("Service Health", body, "Health")
@@ -5338,6 +5412,11 @@ def system():
 
     health = system_health()
     c = cfg()
+    collector_notice = ""
+    if request.args.get("collector") == "restarted":
+        collector_notice = '<div class="setup-ok">Collector restart requested.</div>'
+    elif request.args.get("collector") == "restart_failed":
+        collector_notice = '<div class="setup-warning">Collector restart failed. Check service permissions/logs.</div>'
     force_update_check = request.args.get("check") == "1"
     status = update_status(force=force_update_check, fetch_remote=force_update_check)
     if request.args.get("update") == "started":
@@ -5374,12 +5453,13 @@ def system():
     body = f"""
 {topbar('System')}
 
+{collector_notice}
 <div class="grid">
   <div class="card"><div class="label">CPU</div><span class="big blue">{health['cpu']}%</span></div>
   <div class="card"><div class="label">Memory</div><span class="big purple">{health['mem']}%</span></div>
   <div class="card"><div class="label">Disk / HDD</div><span class="big {'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</span></div>
   <div class="card"><div class="label">Database</div><span class="big teal">{health['db_size']} MB</span></div>
-  <div class="card"><div class="label">Collector</div><span class="big {'green' if health['collector_state'] == 'OK' else 'yellow'}">{health['collector_state']}</span></div>
+  {collector_system_card(health)}
   <div class="card"><div class="label">Uptime</div><span class="big">{health['uptime']}</span></div>
 </div>
 
