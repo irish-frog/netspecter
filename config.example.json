@@ -8,6 +8,7 @@
   "collect_interval_seconds": 2,
   "traffic_retention_days": 30,
   "dns_retention_days": 14,
+  "fast_page_mode": true,
   "public_ip_cache_seconds": 1800,
   "unifi_enabled": false,
   "unifi_connector_url": "",
