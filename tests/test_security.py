@@ -118,6 +118,10 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn('class="dash-app-row" href="/applications/{quote(category, safe=\'\')}?range={range_key()}"', source)
         self.assertIn("if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]'))", source)
         self.assertIn('if title == "Dashboard" else \'<a href="/system#updates"><span>Updates</span></a>\'', source)
+        self.assertIn('id="dashboardUpdateButton"', source)
+        self.assertIn('action="/system"', source)
+        self.assertIn('Update Available</button>', source)
+        self.assertIn('if (dashboardButton) dashboardButton.style.display = "inline-flex";', source)
 
     def test_estimated_app_traffic_has_storage_and_app_detail_output(self):
         source = (SOURCE_DIR / "app.py").read_text()

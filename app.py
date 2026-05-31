@@ -1830,6 +1830,8 @@ async function refreshUpdateStatusBadge() {{
     if (data.available) {{
       span.textContent = "Update Available";
       badge.classList.add("update-available");
+      const dashboardButton = document.getElementById("dashboardUpdateButton");
+      if (dashboardButton) dashboardButton.style.display = "inline-flex";
     }} else if (data.ok) {{
       span.textContent = "Up to Date";
     }} else {{
@@ -2094,6 +2096,9 @@ def dashboard():
 .dash-panel h2 {{ margin:0 0 18px; font-size:20px; }}
 .dash-panel h2 small {{ display:block; color:#9aa7bb; font-size:12px; margin-top:6px; font-weight:700; }}
 .dash-actions {{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }}
+.dash-left-actions {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
+.dashboard-update-form {{ display:none; align-items:center; margin:0; }}
+.dashboard-update-form button {{ border:1px solid rgba(248,200,78,.48); background:rgba(248,200,78,.14); color:#f8c84e; border-radius:14px; padding:9px 13px; cursor:pointer; font-weight:900; }}
 .speed-test-form {{ display:flex; align-items:center; gap:10px; }}
 .speed-test-form button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:9px 14px; cursor:pointer; font-weight:800; }}
 .speed-test-form small {{ color:#9aa7bb; font-weight:700; }}
@@ -2130,7 +2135,13 @@ def dashboard():
 
 <div class="dash-wrap">
   <div class="dash-actions">
-    {time_picker()}
+    <div class="dash-left-actions">
+      {time_picker()}
+      <form id="dashboardUpdateButton" class="dashboard-update-form" method="post" action="/system">
+        {csrf_input()}
+        <button type="submit"><i class="fa-solid fa-cloud-arrow-down"></i> Update Available</button>
+      </form>
+    </div>
     <form method="post" action="/speed-test" class="speed-test-form">
       {csrf_input()}
       <small>Uses internet data once</small>
