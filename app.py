@@ -62,6 +62,7 @@ CONFIG_PATH = CONFIG_ROOT / "config.json"
 DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
 UPDATE_LOG_PATH = DATA_ROOT / "update.log"
+UPDATE_STATE_PATH = DATA_ROOT / "update_state"
 REQUEST_TIMING_PATH = DATA_ROOT / "request_timings.log"
 SECRET_KEY_PATH = CONFIG_ROOT / "secret.key"
 SESSION_KEY_PATH = CONFIG_ROOT / "session.key"
@@ -1283,12 +1284,19 @@ def start_background_update():
         return False, "Source checkout not found."
 
     UPDATE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    state_path = shlex.quote(str(UPDATE_STATE_PATH))
     script = (
         f"cd {shlex.quote(str(source))} && "
         "printf '\\n=== NetSpecter update started %s ===\\n' \"$(date)\" && "
-        "git pull --ff-only && "
-        "bash ./install.sh && "
-        "printf '=== NetSpecter update finished %s ===\\n' \"$(date)\""
+        f"printf 'running %s\\n' \"$(date +%s)\" > {state_path} && "
+        "if git pull --ff-only && bash ./install.sh; then "
+        "printf '=== NetSpecter update finished %s ===\\n' \"$(date)\"; "
+        f"printf 'finished %s\\n' \"$(date +%s)\" > {state_path}; "
+        "else rc=$?; "
+        "printf '=== NetSpecter update failed %s ===\\n' \"$(date)\"; "
+        f"printf 'failed %s\\n' \"$(date +%s)\" > {state_path}; "
+        "exit $rc; "
+        "fi"
     )
     log_file = open(UPDATE_LOG_PATH, "ab")
     try:
@@ -1304,6 +1312,19 @@ def start_background_update():
     except Exception as error:
         log_file.close()
         return False, f"Update could not start: {error}"
+
+
+def update_run_state():
+    if not UPDATE_STATE_PATH.exists():
+        return None, None
+    try:
+        parts = UPDATE_STATE_PATH.read_text(errors="replace").strip().split()
+        state = parts[0] if parts else ""
+        marker_ts = float(parts[1]) if len(parts) > 1 else UPDATE_STATE_PATH.stat().st_mtime
+        age = time.time() - marker_ts
+        return state, age
+    except Exception:
+        return None, None
 
 
 def latest_hosts(limit=100):
@@ -1494,6 +1515,7 @@ def system_health():
         last = query("SELECT MAX(updated_at) AS ts FROM live_device_speed")
         last_seen = last[0]["ts"] if last and last[0]["ts"] else "No data"
 
+    update_state, update_age = update_run_state()
     collector_state = "Unknown"
     if last_seen != "No data":
         try:
@@ -1502,6 +1524,11 @@ def system_health():
             collector_state = "OK" if age < 120 else "Stale"
         except Exception:
             collector_state = "Unknown"
+
+    if update_state == "running" and update_age is not None and update_age < 900:
+        collector_state = "Updating"
+    elif update_state == "finished" and update_age is not None and update_age < 180 and collector_state != "OK":
+        collector_state = "Starting"
 
     return {
         "cpu": cpu,
@@ -2201,6 +2228,8 @@ def dashboard_app_rows():
 def dashboard_health_cards(health):
     if health["collector_state"] == "OK":
         collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="green">{health['collector_state']}</b></div></div>"""
+    elif health["collector_state"] in ("Updating", "Starting"):
+        collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-rotate fa-spin"></i><div><span>Collector</span><b class="yellow">{health['collector_state']}</b><small>Update in progress</small></div></div>"""
     else:
         collector_card = f"""
 <form class="dash-card slim collector-restart-card" method="post" action="/collector/restart">
@@ -2221,6 +2250,8 @@ def dashboard_health_cards(health):
 def collector_system_card(health):
     if health["collector_state"] == "OK":
         return f"""<div class="card"><div class="label">Collector</div><span class="big green">{health['collector_state']}</span></div>"""
+    if health["collector_state"] in ("Updating", "Starting"):
+        return f"""<div class="card"><div class="label">Collector</div><span class="big yellow">{health['collector_state']}</span><p class="sub">Update in progress. The collector will restart automatically.</p></div>"""
     return f"""
 <form class="card" method="post" action="/collector/restart">
   {csrf_input()}

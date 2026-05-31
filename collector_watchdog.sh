@@ -3,6 +3,17 @@
 DB="/var/lib/netspecter/netspecter.db"
 SERVICE="netspecter-collector"
 MAX_AGE=120
+UPDATE_STATE="/var/lib/netspecter/update_state"
+
+if [ -f "$UPDATE_STATE" ]; then
+    STATE=$(awk '{print $1}' "$UPDATE_STATE" 2>/dev/null)
+    STAMP=$(awk '{print $2}' "$UPDATE_STATE" 2>/dev/null)
+    NOW=$(date +%s)
+    if [ "$STATE" = "running" ] && echo "$STAMP" | grep -Eq '^[0-9]+$' && [ $((NOW - STAMP)) -lt 900 ]; then
+        logger "NetSpecter watchdog: update in progress, skipping collector restart"
+        exit 0
+    fi
+fi
 
 AGE=$(sqlite3 "$DB" "
 SELECT ROUND((julianday('now','localtime') - julianday(updated_at)) * 86400, 0)
