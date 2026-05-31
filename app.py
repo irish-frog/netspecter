@@ -106,7 +106,7 @@ DEFAULT_CONFIG = {
     "mqtt_username": "",
     "mqtt_password": "",
     "mqtt_client_id": "netspecter",
-    "mqtt_topic_prefix": "netspecter",
+    "mqtt_subscribe_topics": "",
     "unifi_enabled": False,
     "unifi_connector_url": "",
     "unifi_site_id": "",
@@ -853,6 +853,17 @@ def init_db(force=False):
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_speed_tests_ts ON speed_tests(ts)")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS telemetry_readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value TEXT,
+            ts TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_source_target ON telemetry_readings(source, target, ts)")
     con.commit()
     con.close()
     DB_INIT_DONE = True
@@ -1725,6 +1736,7 @@ def shell(title, body, active="Dashboard"):
         ("Speed Tests", "/speed-tests", "fa-gauge-high"),
         ("Integrations", "/integrations", "fa-plug"),
         ("Health", "/health", "fa-heart-pulse"),
+        ("Telemetry", "/telemetry", "fa-satellite-dish"),
         ("Settings", "/settings", "fa-gear"),
         ("System", "/system", "fa-server"),
         ("Logout", "/logout", "fa-right-from-bracket"),
@@ -4884,6 +4896,40 @@ def health_page():
     return shell("Service Health", body, "Health")
 
 
+@app.route("/telemetry")
+def telemetry():
+    rows = query(
+        """
+        SELECT source, target, metric, value, ts
+        FROM telemetry_readings
+        ORDER BY ts DESC, id DESC
+        LIMIT 200
+        """
+    )
+    table = ""
+    for r in rows:
+        table += f"""
+<tr>
+  <td>{h(str(r['source']).upper())}</td>
+  <td>{h(r['target'])}</td>
+  <td>{h(r['metric'])}</td>
+  <td><span class="mono">{h(str(r['value'])[:240])}</span></td>
+  <td>{h(r['ts'])}</td>
+</tr>"""
+    body = f"""
+{topbar('Telemetry')}
+<div class="panel">
+  <h2>SNMP and MQTT Pulled Data</h2>
+  <p class="sub">NetSpecter stores SNMP poll results and MQTT subscribed messages here. Configure targets and topics under Settings.</p>
+  <table>
+    <tr><th>Source</th><th>Target / Topic</th><th>Metric</th><th>Value</th><th>Time</th></tr>
+    {table or '<tr><td colspan="5">No SNMP or MQTT telemetry has been pulled yet.</td></tr>'}
+  </table>
+</div>
+"""
+    return shell("Telemetry", body, "Telemetry")
+
+
 
 def ag_enabled(endpoint):
     ok, data = ag_get(endpoint)
@@ -5220,20 +5266,20 @@ def settings():
         "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 90 for the 90-day view.",
         "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep. Use 90 for the 90-day view.",
         "fast_page_mode": "Speeds up navigation by disabling dashboard background refresh and loading the traffic graph only when requested.",
-        "snmp_enabled": "Enable SNMP configuration for future polling of switch/router/AP interface and device metrics.",
+        "snmp_enabled": "Enable NetSpecter to poll existing SNMP devices such as switches, routers, APs, UPS units and printers.",
         "snmp_targets": "Comma-separated IPs or hostnames to poll with SNMP, for example gateway, switches and APs.",
-        "snmp_version": "SNMP version to use. Currently stored for setup; polling support will use this value.",
+        "snmp_version": "SNMP version to use for polling. The first collector pass supports v2c targets.",
         "snmp_port": "SNMP UDP port, usually 161.",
         "snmp_community": "SNMP v2c community string. Stored encrypted in the local NetSpecter config.",
-        "snmp_poll_seconds": "Seconds between SNMP polling runs once SNMP collection is enabled.",
-        "mqtt_enabled": "Enable MQTT configuration for future publishing/subscribing of NetSpecter events and metrics.",
+        "snmp_poll_seconds": "Seconds between SNMP polling runs.",
+        "mqtt_enabled": "Enable NetSpecter to subscribe to an existing MQTT broker and pull telemetry messages.",
         "mqtt_host": "MQTT broker host or IP address.",
         "mqtt_port": "MQTT broker port, usually 1883 or 8883 for TLS.",
         "mqtt_tls": "Use TLS when connecting to the MQTT broker.",
         "mqtt_username": "MQTT username, if your broker requires authentication.",
         "mqtt_password": "MQTT password. Stored encrypted in the local NetSpecter config.",
-        "mqtt_client_id": "Client ID NetSpecter should use when connecting to MQTT.",
-        "mqtt_topic_prefix": "Topic prefix for NetSpecter MQTT messages, for example netspecter.",
+        "mqtt_client_id": "Client ID NetSpecter should use when subscribing to MQTT.",
+        "mqtt_subscribe_topics": "Comma-separated MQTT topics to subscribe to, for example sensors/#, home/+/status.",
         "auth_enabled": "Enable or disable the NetSpecter login screen.",
         "admin_user": "Username used to sign in to NetSpecter.",
     }
@@ -5262,7 +5308,7 @@ def settings():
         "mqtt_username": "MQTT Username",
         "mqtt_password": "MQTT Password",
         "mqtt_client_id": "MQTT Client ID",
-        "mqtt_topic_prefix": "MQTT Topic Prefix",
+        "mqtt_subscribe_topics": "MQTT Subscribe Topics",
         "web_host": "Web Host",
         "web_port": "Web Port",
         "auth_enabled": "Login Enabled",
@@ -5274,7 +5320,7 @@ def settings():
         "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
         "fast_page_mode",
         "snmp_enabled", "snmp_targets", "snmp_version", "snmp_port", "snmp_community", "snmp_poll_seconds",
-        "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_tls", "mqtt_username", "mqtt_password", "mqtt_client_id", "mqtt_topic_prefix",
+        "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_tls", "mqtt_username", "mqtt_password", "mqtt_client_id", "mqtt_subscribe_topics",
         "web_host", "web_port",
         "auth_enabled", "admin_user",
     ]

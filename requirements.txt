@@ -3,3 +3,4 @@ gunicorn
 requests
 psutil
 cryptography
+paho-mqtt

@@ -23,7 +23,7 @@
   "mqtt_username": "",
   "mqtt_password": "",
   "mqtt_client_id": "netspecter",
-  "mqtt_topic_prefix": "netspecter",
+  "mqtt_subscribe_topics": "",
   "unifi_enabled": false,
   "unifi_connector_url": "",
   "unifi_site_id": "",

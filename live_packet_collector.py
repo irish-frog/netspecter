@@ -42,6 +42,11 @@ from urllib.parse import quote
 import requests
 
 try:
+    import paho.mqtt.client as mqtt
+except Exception:
+    mqtt = None
+
+try:
     from cryptography.fernet import Fernet, InvalidToken
 except Exception:
     Fernet = None
@@ -78,7 +83,7 @@ COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
 IDS_EMAIL_STATE_PATH = DATA_DIR / "ids_email_state.json"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password", "snmp_community", "mqtt_password"}
 collector_lock_handle = None
 
 
@@ -130,6 +135,20 @@ DEFAULT_CONFIG = {
     "smtp_from": "",
     "smtp_to": "",
     "ids_email_cooldown_minutes": 30,
+    "snmp_enabled": False,
+    "snmp_targets": "",
+    "snmp_version": "2c",
+    "snmp_port": 161,
+    "snmp_community": "",
+    "snmp_poll_seconds": 60,
+    "mqtt_enabled": False,
+    "mqtt_host": "",
+    "mqtt_port": 1883,
+    "mqtt_tls": False,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "mqtt_client_id": "netspecter",
+    "mqtt_subscribe_topics": "",
 }
 
 
@@ -878,6 +897,18 @@ def init_db():
         )
         """
     )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS telemetry_readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            target TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value TEXT,
+            ts TEXT NOT NULL
+        )
+        """
+    )
 
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_day_ip ON traffic_samples(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_traffic_ip_ts ON traffic_samples(ip, ts)")
@@ -888,6 +919,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_category ON dns_querylog(category)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_source_target ON telemetry_readings(source, target, ts)")
 
     # Prevent duplicate imports from AdGuard.
     con.execute(
@@ -910,6 +942,126 @@ def run_sql(sql, params=()):
         con.close()
     except Exception as e:
         print(f"DB write failed: {e}")
+
+
+def store_telemetry(source, target, metric, value):
+    run_sql(
+        """
+        INSERT INTO telemetry_readings (source, target, metric, value, ts)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            str(source or "")[:40],
+            str(target or "")[:180],
+            str(metric or "")[:180],
+            str(value or "")[:1000],
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+
+
+def snmpget_value(target, community, oid, port=161):
+    command = [
+        "snmpget",
+        "-v2c",
+        "-c",
+        str(community),
+        "-Oqv",
+        f"{target}:{int(port)}",
+        oid,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        return (result.stdout or "").strip().strip('"')
+    except FileNotFoundError:
+        return "snmpget not installed"
+    except Exception as e:
+        print(f"SNMP poll failed for {target}: {e}")
+        return ""
+
+
+def poll_snmp_targets(config):
+    if not config.get("snmp_enabled"):
+        return
+    community = str(config.get("snmp_community", "") or "").strip()
+    targets = cfg_list(config.get("snmp_targets", ""))
+    if not community or not targets:
+        return
+    port = positive_int(config.get("snmp_port", 161), 161, 1)
+    oids = {
+        "sys_name": "1.3.6.1.2.1.1.5.0",
+        "sys_descr": "1.3.6.1.2.1.1.1.0",
+        "sys_uptime": "1.3.6.1.2.1.1.3.0",
+    }
+    for target in targets:
+        for metric, oid in oids.items():
+            value = snmpget_value(target, community, oid, port)
+            if value:
+                store_telemetry("snmp", target, metric, value)
+
+
+def snmp_poll_loop():
+    init_db()
+    while True:
+        c = cfg()
+        interval = positive_int(c.get("snmp_poll_seconds", 60), 60, 10)
+        try:
+            poll_snmp_targets(c)
+        except Exception as e:
+            print(f"SNMP telemetry loop failed: {e}")
+        time.sleep(interval)
+
+
+def mqtt_subscription_loop():
+    if mqtt is None:
+        print("MQTT subscriber disabled: paho-mqtt is not installed")
+        return
+    while True:
+        c = cfg()
+        if not c.get("mqtt_enabled") or not str(c.get("mqtt_host", "") or "").strip():
+            time.sleep(30)
+            continue
+        topics = cfg_list(c.get("mqtt_subscribe_topics", ""))
+        if not topics:
+            time.sleep(30)
+            continue
+        try:
+            client = mqtt.Client(client_id=str(c.get("mqtt_client_id") or "netspecter"))
+            username = str(c.get("mqtt_username", "") or "")
+            password = str(c.get("mqtt_password", "") or "")
+            if username or password:
+                client.username_pw_set(username, password)
+            if c.get("mqtt_tls"):
+                client.tls_set()
+
+            def on_connect(client, _userdata, _flags, rc):
+                if rc == 0:
+                    for topic in topics:
+                        client.subscribe(topic)
+                    print(f"MQTT subscriber connected; topics: {', '.join(topics)}")
+                else:
+                    print(f"MQTT subscriber connect failed: {rc}")
+
+            def on_message(_client, _userdata, message):
+                payload = message.payload.decode("utf-8", errors="replace")
+                store_telemetry("mqtt", message.topic, "payload", payload)
+
+            client.on_connect = on_connect
+            client.on_message = on_message
+            client.connect(str(c.get("mqtt_host")), positive_int(c.get("mqtt_port", 1883), 1883, 1), keepalive=60)
+            client.loop_forever()
+        except Exception as e:
+            print(f"MQTT subscriber loop failed: {e}")
+            time.sleep(30)
 
 
 def ids_known_ips():
@@ -1701,11 +1853,20 @@ if __name__ == "__main__":
     dns_thread = threading.Thread(target=adguard_querylog_loop, daemon=True)
     dns_thread.start()
 
+    # Thread 3: SNMP telemetry polling.
+    snmp_thread = threading.Thread(target=snmp_poll_loop, daemon=True)
+    snmp_thread.start()
+
+    # Thread 4: MQTT telemetry subscription.
+    mqtt_thread = threading.Thread(target=mqtt_subscription_loop, daemon=True)
+    mqtt_thread.start()
+
     interface = str(cfg().get("packet_iface") or "br0")
 
     print(f"NetSpecter nftables collector started for bridge: {interface}")
     print(f"Database: {DB_PATH}")
     print("AdGuard DNS querylog importer started")
+    print("SNMP/MQTT telemetry collectors started")
     write_heartbeat("OK", "collector started")
 
     while True:
