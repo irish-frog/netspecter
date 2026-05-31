@@ -683,6 +683,7 @@ def init_db(force=False):
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ts ON traffic_intervals(ts)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS estimated_app_traffic (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3047,16 +3048,16 @@ def api_history():
 
     if period == "1h":
         bucket_expr = "substr(ts, 1, 16)"
-        since_expr = "datetime('now','localtime','-1 hour')"
+        since_clause = "ts >= datetime('now','localtime','-1 hour')"
     elif period == "24h":
         bucket_expr = "substr(ts, 1, 13) || ':00'"
-        since_expr = "datetime('now','localtime','-24 hours')"
+        since_clause = "ts >= datetime('now','localtime','-24 hours')"
     elif period == "7d":
         bucket_expr = "day"
-        since_expr = "date('now','localtime','-7 days')"
+        since_clause = "day >= date('now','localtime','-7 days')"
     else:
         bucket_expr = "day"
-        since_expr = "date('now','localtime','-30 days')"
+        since_clause = "day >= date('now','localtime','-30 days')"
 
     if ip:
         rows = query(
@@ -3068,7 +3069,7 @@ def api_history():
                 SUM(total_mb) AS total
             FROM traffic_intervals
             WHERE ip=?
-              AND ts >= {since_expr}
+              AND {since_clause}
             GROUP BY bucket
             ORDER BY bucket ASC
             """,
@@ -3090,7 +3091,7 @@ def api_history():
                     SUM(uploaded_mb) AS uploaded,
                     SUM(total_mb) AS total
                 FROM traffic_intervals
-                WHERE ts >= {since_expr}
+                WHERE {since_clause}
                 GROUP BY bucket, ip
             )
             GROUP BY bucket
