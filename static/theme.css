@@ -164,6 +164,12 @@ body {
   transform: translateY(-1px);
 }
 
+.badges a.update-available span {
+  border-color: rgba(248, 200, 78, .58);
+  color: #f8c84e;
+  background: rgba(248, 200, 78, .12);
+}
+
 .time-picker {
   display: inline-flex;
   gap: 6px;

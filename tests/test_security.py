@@ -108,12 +108,14 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn('ROOT = Path(os.environ.get("NETSPECTER_APP_ROOT", str(INSTALL_ROOT)))', source)
         self.assertNotIn('"/root/netspecter"', source)
 
-    def test_dashboard_panels_refresh_every_five_seconds(self):
+    def test_dashboard_summary_refreshes_fast_and_heavy_chart_refreshes_slower(self):
         source = (SOURCE_DIR / "app.py").read_text()
         self.assertIn("setInterval(loadDashboardSummary, 5000);", source)
-        self.assertIn("setInterval(loadDashboardTraffic, 5000);", source)
+        self.assertIn("setInterval(loadDashboardTraffic, 30000);", source)
         self.assertNotIn("setInterval(loadDashboardSummary, 30000);", source)
-        self.assertNotIn("setInterval(loadDashboardTraffic, 30000);", source)
+        self.assertNotIn("setInterval(loadDashboardTraffic, 5000);", source)
+        self.assertIn('class="dash-app-row" href="/applications/{quote(category, safe=\'\')}?range={range_key()}"', source)
+        self.assertIn("if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]'))", source)
 
     def test_estimated_app_traffic_has_storage_and_app_detail_output(self):
         source = (SOURCE_DIR / "app.py").read_text()
@@ -178,7 +180,7 @@ class WebSecurityTests(unittest.TestCase):
     def test_stylesheet_url_changes_when_sidebar_watermark_css_changes(self):
         source = (SOURCE_DIR / "app.py").read_text()
         css = (SOURCE_DIR / "static" / "theme.css").read_text()
-        self.assertIn("/static/theme.css?v=20260526m", source)
+        self.assertIn("/static/theme.css?v=20260531a", source)
         self.assertIn('<div class="designer-credit">Designed by Gavin Reniers</div>\n  <img src="/static/netspecter-logo-sidebar.png" class="brand-logo">', source)
         self.assertIn("color: #2B4470;", css)
         self.assertNotIn("position: absolute;\n  left: 16px;\n  right: 16px;\n  bottom: 14px;\n  color: rgba(154, 167, 187, .55);", css)
@@ -213,6 +215,12 @@ class WebSecurityTests(unittest.TestCase):
         self.assertIn("smtp_password", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("/integrations", rules)
         self.assertIn("/speed-tests", rules)
+        self.assertIn("/api/update-status", rules)
+        self.assertIn("/system", rules)
+        self.assertIn("POST", rules["/system"])
+        self.assertIn("def start_background_update():", source)
+        self.assertIn("Update Available", source)
+        self.assertIn("git pull --ff-only", source)
         self.assertIn("def find_unifi_site(config):", source)
         self.assertIn("def unifi_verify_tls(config):", source)
         self.assertIn("def unifi_connector_bases(config):", source)

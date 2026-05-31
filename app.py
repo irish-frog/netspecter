@@ -14,6 +14,7 @@ import secrets
 import re
 import smtplib
 import ssl
+import shlex
 from functools import wraps
 from collections import Counter
 from datetime import datetime
@@ -60,9 +61,13 @@ ROOT = Path(os.environ.get("NETSPECTER_APP_ROOT", str(INSTALL_ROOT)))
 CONFIG_PATH = CONFIG_ROOT / "config.json"
 DB_PATH = DATA_ROOT / "netspecter.db"
 CACHE_PATH = DATA_ROOT / "cache.json"
+UPDATE_LOG_PATH = DATA_ROOT / "update.log"
 SECRET_KEY_PATH = CONFIG_ROOT / "secret.key"
 SESSION_KEY_PATH = CONFIG_ROOT / "session.key"
 SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
+
+DB_INIT_DONE = False
+UPDATE_STATUS_CACHE = {"ts": 0, "data": None}
 
 app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
 
@@ -429,7 +434,7 @@ def login_template(title, body):
 <title>{h(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260526m">
+<link rel="stylesheet" href="/static/theme.css?v=20260531a">
 </head>
 <body class="login-body">
   <div class="login-card">
@@ -618,16 +623,20 @@ def h(value):
 def connect_db():
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30)
-    con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=30000")
     return con
 
 
 
-def init_db():
+def init_db(force=False):
     """Create the minimum database schema required by the web UI and collector."""
+    global DB_INIT_DONE
+    if DB_INIT_DONE and DB_PATH.exists() and not force:
+        return
+
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     con = connect_db()
+    con.execute("PRAGMA journal_mode=WAL")
     con.execute("""
         CREATE TABLE IF NOT EXISTS devices (
             ip TEXT PRIMARY KEY,
@@ -782,6 +791,7 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_speed_tests_ts ON speed_tests(ts)")
     con.commit()
     con.close()
+    DB_INIT_DONE = True
 
 def ensure_device_overrides_table():
     if not DB_PATH.exists():
@@ -1107,6 +1117,97 @@ def collector_service_action(action):
 def restart_collector_service():
     return collector_service_action("restart")
 
+
+def source_checkout_root():
+    candidates = [
+        os.environ.get("NETSPECTER_SOURCE_ROOT"),
+        str(Path.home() / "netspecter"),
+        str(BASE_DIR),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if (path / ".git").exists():
+            return path
+    return None
+
+
+def git_command(source_root, *args, timeout=20):
+    result = subprocess.run(
+        ["git", "-C", str(source_root), *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+
+
+def update_status(force=False):
+    now = time.time()
+    cached = UPDATE_STATUS_CACHE.get("data")
+    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 300:
+        return cached
+
+    source = source_checkout_root()
+    if not source:
+        data = {"ok": False, "available": False, "detail": "Source checkout not found."}
+        UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
+        return data
+
+    git_command(source, "fetch", "--quiet", "origin", timeout=30)
+    _rc, current, _err = git_command(source, "rev-parse", "--short", "HEAD")
+    rc, latest, err = git_command(source, "rev-parse", "--short", "origin/main")
+    if rc != 0:
+        data = {"ok": False, "available": False, "detail": err or "Could not read origin/main."}
+        UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
+        return data
+
+    rc, behind, _err = git_command(source, "rev-list", "--count", "HEAD..origin/main")
+    available = rc == 0 and str(behind or "0").isdigit() and int(behind) > 0
+    data = {
+        "ok": True,
+        "available": available,
+        "current": current,
+        "latest": latest,
+        "behind": int(behind or 0) if str(behind or "0").isdigit() else 0,
+        "source": str(source),
+    }
+    UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
+    return data
+
+
+def start_background_update():
+    source = source_checkout_root()
+    if not source:
+        return False, "Source checkout not found."
+
+    UPDATE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        f"cd {shlex.quote(str(source))} && "
+        "printf '\\n=== NetSpecter update started %s ===\\n' \"$(date)\" && "
+        "git pull --ff-only && "
+        "bash ./install.sh && "
+        "printf '=== NetSpecter update finished %s ===\\n' \"$(date)\""
+    )
+    log_file = open(UPDATE_LOG_PATH, "ab")
+    try:
+        subprocess.Popen(
+            ["bash", "-lc", script],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        log_file.close()
+        UPDATE_STATUS_CACHE.update({"ts": 0, "data": None})
+        return True, "Update started."
+    except Exception as error:
+        log_file.close()
+        return False, f"Update could not start: {error}"
+
+
 def latest_hosts(limit=100):
     ensure_device_overrides_table()
     ignore = ignored_ips()
@@ -1270,7 +1371,7 @@ def system_health():
     db_size = round(DB_PATH.stat().st_size / 1024 / 1024, 2) if DB_PATH.exists() else 0
 
     if psutil:
-        cpu = psutil.cpu_percent(interval=0.1)
+        cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory().percent
         disk = psutil.disk_usage("/").percent
         uptime_seconds = int(time.time() - psutil.boot_time())
@@ -1710,9 +1811,34 @@ async function refreshLiveSpeeds() {{
   }}
 }}
 
-// Start live polling globally on every page.
-setInterval(refreshLiveSpeeds, 2000);
-refreshLiveSpeeds();
+// Start live polling only on pages with live speed widgets.
+if (document.querySelector('[data-live-ip][data-live-field], [data-live-network][data-live-field]')) {{
+  setInterval(refreshLiveSpeeds, 2000);
+  refreshLiveSpeeds();
+}}
+
+async function refreshUpdateStatusBadge() {{
+  const badge = document.getElementById("updateStatusBadge");
+  if (!badge) return;
+  try {{
+    const res = await fetch("/api/update-status", {{cache: "no-store"}});
+    if (!res.ok) return;
+    const data = await res.json();
+    const span = badge.querySelector("span");
+    if (!span) return;
+    if (data.available) {{
+      span.textContent = "Update Available";
+      badge.classList.add("update-available");
+    }} else if (data.ok) {{
+      span.textContent = "Up to Date";
+    }} else {{
+      span.textContent = "Update Check";
+    }}
+  }} catch (e) {{
+    console.log("Update status check failed:", e);
+  }}
+}}
+refreshUpdateStatusBadge();
 
 </script>
 </body>
@@ -1732,6 +1858,7 @@ def topbar(title="Dashboard"):
   <div class="badges">
     <span>Observed IPv4 traffic</span>
     <span>Public IP: {public_ip(refresh=False)}</span>
+    <a id="updateStatusBadge" href="/system#updates"><span>Checking updates...</span></a>
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
     <span>LAN: {c.get('lan_prefix')}0/24</span>
@@ -1788,6 +1915,11 @@ def api_live():
     }
 
     return data
+
+
+@app.route("/api/update-status")
+def api_update_status():
+    return update_status()
 
 
 @app.route("/api/dashboard-summary")
@@ -1865,16 +1997,17 @@ def dashboard():
     app_rows = ""
 
     for r in cats:
+        category = str(r["category"] or "Other")
         count = int(r["total"] or 0)
         width = max(4, min(count / max_count * 100, 100))
         pct = round(count / cat_total * 100, 1)
         app_rows += f"""
-<div class="dash-app-row">
-  <div class="dash-app-name">{icon_for_app(r['category'])}<span>{h(r['category'])}</span></div>
+<a class="dash-app-row" href="/applications/{quote(category, safe='')}?range={range_key()}">
+  <div class="dash-app-name">{icon_for_app(category)}<span>{h(category)}</span></div>
   <div class="dash-app-bar"><span style="width:{width}%"></span></div>
   <b>{count}</b>
   <em>{pct}%</em>
-</div>
+</a>
 """
 
     health_cards = f"""
@@ -1963,6 +2096,8 @@ def dashboard():
 .speed-test-form button {{ border:1px solid rgba(91,168,255,.42); background:rgba(91,168,255,.16); color:#e9f3ff; border-radius:10px; padding:9px 14px; cursor:pointer; font-weight:800; }}
 .speed-test-form small {{ color:#9aa7bb; font-weight:700; }}
 .dash-app-row {{ display:grid; grid-template-columns:150px 1fr 54px 54px; align-items:center; gap:12px; margin:12px 0; padding:8px 10px; border-radius:8px; background:#0d172a; }}
+.dash-app-row {{ color:#f4f7fb; text-decoration:none; border:1px solid transparent; }}
+.dash-app-row:hover {{ border-color:rgba(147,197,253,.45); background:#101d32; }}
 .dash-app-name {{ display:flex; align-items:center; gap:12px; }}
 .dash-app-name i {{ font-size:23px; width:26px; text-align:center; }}
 .dash-app-bar {{ height:8px; background:#2a374b; border-radius:999px; overflow:hidden; }}
@@ -2092,7 +2227,7 @@ async function loadDashboardTraffic() {{
 loadDashboardSummary();
 loadDashboardTraffic();
 setInterval(loadDashboardSummary, 5000);
-setInterval(loadDashboardTraffic, 5000);
+setInterval(loadDashboardTraffic, 30000);
 </script>
 """
 
@@ -4886,10 +5021,34 @@ if (speedCtx) {{
     return shell("Speed Test History", body, "Speed Tests")
 
 
-@app.route("/system")
+@app.route("/system", methods=["GET", "POST"])
 def system():
+    if request.method == "POST":
+        ok, _message = start_background_update()
+        return redirect("/system?update=started#updates" if ok else "/system?update=failed#updates")
+
     health = system_health()
     c = cfg()
+    status = update_status(force=request.args.get("check") == "1")
+    if request.args.get("update") == "started":
+        update_notice = '<div class="setup-ok">Update started. This page may briefly disconnect while NetSpecter restarts.</div>'
+    elif request.args.get("update") == "failed":
+        update_notice = '<div class="setup-warning">Update could not start. Check the source checkout path.</div>'
+    else:
+        update_notice = ""
+    if status.get("ok"):
+        update_label = "Update Available" if status.get("available") else "Up to Date"
+        update_detail = f"Installed {h(status.get('current', '-'))}; latest {h(status.get('latest', '-'))}."
+    else:
+        update_label = "Check Failed"
+        update_detail = h(status.get("detail", "Update status unavailable."))
+    update_button = "Update NetSpecter Now" if status.get("available") else "Reinstall Current Version"
+    update_log = ""
+    if UPDATE_LOG_PATH.exists():
+        try:
+            update_log = UPDATE_LOG_PATH.read_text(errors="replace")[-5000:]
+        except Exception:
+            update_log = "Update log could not be read."
 
     body = f"""
 {topbar('System')}
@@ -4908,6 +5067,19 @@ def system():
 <p><b>Database:</b> {DB_PATH}</p>
 <p><b>Public IP cache:</b> {public_ip()}</p>
 <p><b>Web listener:</b> {h(c.get('web_host', '0.0.0.0'))}:{h(c.get('web_port', 5050))}</p>
+</div>
+<div class="panel" id="updates">
+  <h2>NetSpecter Updates</h2>
+  {update_notice}
+  <p><b>Status:</b> {update_label}</p>
+  <p class="sub">{update_detail}</p>
+  <form method="post">
+    {csrf_input()}
+    <button class="btn-yellow" type="submit">{update_button}</button>
+    <a class="btn" href="/system?check=1#updates">Check Again</a>
+  </form>
+  <p class="sub">The update runs in the background with <span class="mono">git pull --ff-only</span> and then the installer. NetSpecter may restart during the update.</p>
+  <pre>{h(update_log) if update_log else 'No update log yet.'}</pre>
 </div>
 """
     return shell("System", body, "System")
