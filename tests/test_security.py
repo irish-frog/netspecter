@@ -99,6 +99,10 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(90, example["dns_retention_days"])
         self.assertTrue(self.module.DEFAULT_CONFIG["fast_page_mode"])
         self.assertTrue(example["fast_page_mode"])
+        self.assertFalse(self.module.DEFAULT_CONFIG["snmp_enabled"])
+        self.assertFalse(example["snmp_enabled"])
+        self.assertFalse(self.module.DEFAULT_CONFIG["mqtt_enabled"])
+        self.assertFalse(example["mqtt_enabled"])
 
     def test_web_service_uses_gunicorn_wsgi_entrypoint(self):
         requirements = (SOURCE_DIR / "requirements.txt").read_text().splitlines()
@@ -154,6 +158,8 @@ class WebSecurityTests(unittest.TestCase):
         self.assertNotIn("setInterval(loadDashboardTraffic, 5000);", source)
         self.assertIn('class="dash-app-row" href="/applications/{quote(category, safe=\'\')}?range={range_key()}"', source)
         self.assertIn("if (hasLiveSpeedWidgets())", source)
+        self.assertIn("font-size:24px", source)
+        self.assertIn("font-size:12px", source)
         self.assertIn('if title == "Dashboard" else \'<a href="/system#updates"><span>Updates</span></a>\'', source)
         self.assertIn('id="dashboardUpdateButton"', source)
         self.assertIn('action="/system"', source)
@@ -168,6 +174,17 @@ class WebSecurityTests(unittest.TestCase):
             self.assertIn('class="active" href="/traffic?range=90d"', html)
             self.assertEqual(90, self.module.range_days())
             self.assertEqual("90d", self.module.range_key())
+
+    def test_settings_exposes_snmp_and_mqtt_setup(self):
+        with self.module.app.test_request_context("/settings"):
+            html = self.module.settings()
+        self.assertIn("SNMP Enabled", html)
+        self.assertIn("SNMP Targets", html)
+        self.assertIn("MQTT Enabled", html)
+        self.assertIn("MQTT Broker Host", html)
+        self.assertIn("MQTT Topic Prefix", html)
+        self.assertIn("type='checkbox' name='snmp_enabled'", html)
+        self.assertIn("type='checkbox' name='mqtt_tls'", html)
 
     def test_app_shell_partial_returns_body_only(self):
         with self.module.app.test_request_context("/traffic?_partial=1"):
@@ -277,6 +294,8 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(0, example["scheduled_speedtests_per_day"])
         self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("smtp_password", self.module.SENSITIVE_CONFIG_KEYS)
+        self.assertIn("snmp_community", self.module.SENSITIVE_CONFIG_KEYS)
+        self.assertIn("mqtt_password", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("/integrations", rules)
         self.assertIn("/speed-tests", rules)
         self.assertIn("/api/update-status", rules)

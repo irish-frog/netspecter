@@ -235,11 +235,11 @@ body {
 
 .label {
   color: #c5d2df;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .big {
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 900;
   margin-top: 8px;
   display: block;
@@ -1078,6 +1078,6 @@ button,
   }
 
   .big {
-    font-size: 26px;
+    font-size: 24px;
   }
 }

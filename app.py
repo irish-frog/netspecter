@@ -93,6 +93,20 @@ DEFAULT_CONFIG = {
     "dns_retention_days": 90,
     "public_ip_cache_seconds": 1800,
     "fast_page_mode": True,
+    "snmp_enabled": False,
+    "snmp_targets": "",
+    "snmp_version": "2c",
+    "snmp_port": 161,
+    "snmp_community": "",
+    "snmp_poll_seconds": 60,
+    "mqtt_enabled": False,
+    "mqtt_host": "",
+    "mqtt_port": 1883,
+    "mqtt_tls": False,
+    "mqtt_username": "",
+    "mqtt_password": "",
+    "mqtt_client_id": "netspecter",
+    "mqtt_topic_prefix": "netspecter",
     "unifi_enabled": False,
     "unifi_connector_url": "",
     "unifi_site_id": "",
@@ -113,7 +127,7 @@ DEFAULT_CONFIG = {
     "ids_email_cooldown_minutes": 30,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password", "snmp_community", "mqtt_password"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
     "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
@@ -2266,8 +2280,8 @@ def dashboard():
   text-decoration:none;
 }}
 .dash-card:hover {{ border-color:rgba(147,197,253,.55); transform:none; }}
-.dash-card .label {{ color:#9aa7bb; font-size:13px; margin-bottom:9px; font-weight:800; }}
-.dash-card .big {{ display:block; font-size:26px; font-weight:900; line-height:1.1; }}
+.dash-card .label {{ color:#9aa7bb; font-size:12px; margin-bottom:9px; font-weight:800; }}
+.dash-card .big {{ display:block; font-size:24px; font-weight:900; line-height:1.1; }}
 .dash-card small {{ display:block; margin-top:7px; color:#9aa7bb; font-weight:700; }}
 .dash-card.slim {{ display:flex; align-items:center; gap:14px; min-height:62px; padding:13px 15px; }}
 .dash-card.slim i {{
@@ -5160,10 +5174,13 @@ def integrations():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     c = cfg()
+    hidden_settings = {"app_name", "tagline", "admin_password_hash"} | INTEGRATION_SETTINGS_KEYS
+    editable_keys = [key for key in c.keys() if key not in hidden_settings]
 
     if request.method == "POST":
-        for key in list(c.keys()):
-            if key == "admin_password_hash":
+        for key in editable_keys:
+            if isinstance(c[key], bool):
+                c[key] = request.form.get(key) == "1"
                 continue
             if key in request.form:
                 val = request.form.get(key)
@@ -5203,6 +5220,20 @@ def settings():
         "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 90 for the 90-day view.",
         "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep. Use 90 for the 90-day view.",
         "fast_page_mode": "Speeds up navigation by disabling dashboard background refresh and loading the traffic graph only when requested.",
+        "snmp_enabled": "Enable SNMP configuration for future polling of switch/router/AP interface and device metrics.",
+        "snmp_targets": "Comma-separated IPs or hostnames to poll with SNMP, for example gateway, switches and APs.",
+        "snmp_version": "SNMP version to use. Currently stored for setup; polling support will use this value.",
+        "snmp_port": "SNMP UDP port, usually 161.",
+        "snmp_community": "SNMP v2c community string. Stored encrypted in the local NetSpecter config.",
+        "snmp_poll_seconds": "Seconds between SNMP polling runs once SNMP collection is enabled.",
+        "mqtt_enabled": "Enable MQTT configuration for future publishing/subscribing of NetSpecter events and metrics.",
+        "mqtt_host": "MQTT broker host or IP address.",
+        "mqtt_port": "MQTT broker port, usually 1883 or 8883 for TLS.",
+        "mqtt_tls": "Use TLS when connecting to the MQTT broker.",
+        "mqtt_username": "MQTT username, if your broker requires authentication.",
+        "mqtt_password": "MQTT password. Stored encrypted in the local NetSpecter config.",
+        "mqtt_client_id": "Client ID NetSpecter should use when connecting to MQTT.",
+        "mqtt_topic_prefix": "Topic prefix for NetSpecter MQTT messages, for example netspecter.",
         "auth_enabled": "Enable or disable the NetSpecter login screen.",
         "admin_user": "Username used to sign in to NetSpecter.",
     }
@@ -5218,6 +5249,20 @@ def settings():
         "traffic_retention_days": "Traffic Retention Days",
         "dns_retention_days": "DNS/App Retention Days",
         "fast_page_mode": "Fast Page Mode",
+        "snmp_enabled": "SNMP Enabled",
+        "snmp_targets": "SNMP Targets",
+        "snmp_version": "SNMP Version",
+        "snmp_port": "SNMP Port",
+        "snmp_community": "SNMP Community",
+        "snmp_poll_seconds": "SNMP Poll Seconds",
+        "mqtt_enabled": "MQTT Enabled",
+        "mqtt_host": "MQTT Broker Host",
+        "mqtt_port": "MQTT Broker Port",
+        "mqtt_tls": "MQTT TLS Enabled",
+        "mqtt_username": "MQTT Username",
+        "mqtt_password": "MQTT Password",
+        "mqtt_client_id": "MQTT Client ID",
+        "mqtt_topic_prefix": "MQTT Topic Prefix",
         "web_host": "Web Host",
         "web_port": "Web Port",
         "auth_enabled": "Login Enabled",
@@ -5228,6 +5273,8 @@ def settings():
         "adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds",
         "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
         "fast_page_mode",
+        "snmp_enabled", "snmp_targets", "snmp_version", "snmp_port", "snmp_community", "snmp_poll_seconds",
+        "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_tls", "mqtt_username", "mqtt_password", "mqtt_client_id", "mqtt_topic_prefix",
         "web_host", "web_port",
         "auth_enabled", "admin_user",
     ]
@@ -5237,6 +5284,11 @@ def settings():
     for key in ordered_keys:
         val = c[key]
         if key in ["app_name", "tagline", "admin_password_hash"] or key in INTEGRATION_SETTINGS_KEYS:
+            continue
+        if isinstance(val, bool):
+            checked = " checked" if val else ""
+            help_text = f"<small>{h(setting_help[key])}</small>" if key in setting_help else ""
+            fields += f"<label><input type='checkbox' name='{key}' value='1' style='width:auto'{checked}> {h(setting_labels.get(key, key))}</label>{help_text}"
             continue
         typ = "password" if "pass" in key else "text"
         display_val = "" if key in SENSITIVE_CONFIG_KEYS else ", ".join(val) if isinstance(val, list) else val
