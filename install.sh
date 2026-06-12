@@ -57,7 +57,10 @@ mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$C
 echo "[5/9] Copying NetSpecter files..."
 # A collector started outside systemd, or from an older build without locking,
 # can otherwise keep writing stale totals after an upgrade.
-systemctl stop netspecter-collector >/dev/null 2>&1 || true
+systemctl stop netspecter-collector netspecter-live >/dev/null 2>&1 || true
+systemctl disable netspecter-live >/dev/null 2>&1 || true
+rm -f "$SERVICE_DIR/netspecter-live.service"
+systemctl daemon-reload
 pkill -f 'live_packet_collector.py' >/dev/null 2>&1 || true
 cp app.py "$INSTALL_DIR/app.py"
 cp gunicorn_config.py "$INSTALL_DIR/gunicorn_config.py"
