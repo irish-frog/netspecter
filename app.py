@@ -2971,6 +2971,117 @@ def adguard_set_disallowed(ip, blocked=True):
     return ok, resp
 
 
+def app_block_marker(ip, category):
+    return f"! netspecter-app-block ip={ip} category={quote(str(category or 'Other'), safe='')}"
+
+
+def app_block_rule(ip, domain):
+    return f"||{domain}^$client={ip}"
+
+
+def app_block_domain_valid(domain):
+    text = str(domain or "").strip().lower().strip(".")
+    if not text or len(text) > 253 or is_noise(text):
+        return False
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", text)) and "." in text
+
+
+def app_block_status(ip, category):
+    ok, data = ag_get("/filtering/status")
+    if not ok or not isinstance(data, dict):
+        return False, [], data
+
+    rules = data.get("user_rules") or []
+    marker = app_block_marker(ip, category)
+    return marker in rules, rules, data
+
+
+def device_dns_client_keys(ip):
+    rows = query(
+        """
+        SELECT
+            COALESCE(o.name, d.name, d.ip) AS display_name,
+            d.mac
+        FROM devices d
+        LEFT JOIN device_overrides o ON o.ip=d.ip
+        WHERE d.ip=?
+        LIMIT 1
+        """,
+        (ip,),
+    )
+    keys = [ip]
+    if rows:
+        for key in [rows[0]["mac"], rows[0]["display_name"]]:
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def app_domains_for_device(ip, category):
+    start_day = range_start_day()
+    client_keys = device_dns_client_keys(ip)
+    placeholders = ",".join(["?"] * len(client_keys))
+    rows = query(
+        f"""
+        SELECT domain, COUNT(*) AS total
+        FROM dns_querylog
+        WHERE client IN ({placeholders}) AND category=? AND day>=?
+        GROUP BY domain
+        ORDER BY total DESC
+        LIMIT 200
+        """,
+        tuple(client_keys) + (category, start_day),
+    )
+    domains = []
+    seen = set()
+    for row in rows:
+        domain = str(row["domain"] or "").strip().lower().strip(".")
+        if app_block_domain_valid(domain) and domain not in seen:
+            seen.add(domain)
+            domains.append(domain)
+    return domains
+
+
+def set_app_block(ip, category, blocked=True):
+    current_blocked, rules, detail = app_block_status(ip, category)
+    if not isinstance(rules, list):
+        rules = []
+
+    marker = app_block_marker(ip, category)
+    cleaned = []
+    skip_next_rules = False
+    for rule in rules:
+        if rule == marker:
+            skip_next_rules = True
+            continue
+        if skip_next_rules and str(rule).startswith("||") and f"$client={ip}" in str(rule):
+            continue
+        skip_next_rules = False
+        cleaned.append(rule)
+
+    if blocked:
+        domains = app_domains_for_device(ip, category)
+        if not domains:
+            return False, {"error": "No observed domains for this device/application yet."}
+        cleaned.append(marker)
+        cleaned.extend(app_block_rule(ip, domain) for domain in domains)
+
+    ok, resp = ag_post("/filtering/set_rules", cleaned)
+    return ok, resp if ok else (resp or detail)
+
+
+@app.route("/device/<ip>/app-block", methods=["POST"])
+def toggle_device_app_block(ip):
+    if not valid_lan_ip(ip):
+        return shell("Invalid IP", f"{topbar('Invalid IP')}<div class='panel'>Invalid IP address.</div>", "Devices")
+
+    category = request.form.get("category", "Other").strip() or "Other"
+    action = request.form.get("action", "block")
+    ok, _resp = set_app_block(ip, category, action == "block")
+    suffix = "app_blocked=1" if ok and action == "block" else "app_unblocked=1" if ok else "app_block_failed=1"
+    return redirect(f"/device/{ip}?range={range_key()}&{suffix}#device-applications")
+
+
 @app.route("/device/pause/<ip>", methods=["POST"])
 def pause_device(ip):
     if not valid_lan_ip(ip):
@@ -3250,16 +3361,29 @@ def device(ip):
     app_rows = ""
     max_count = max(category_counts.values(), default=1)
     total_queries = sum(category_counts.values())
+    _ok_app_rules, app_block_rules, _app_rule_detail = app_block_status(ip, "__probe__")
+    if not isinstance(app_block_rules, list):
+        app_block_rules = []
 
     for cat, count in sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:8]:
         width = max(5, min(count / max_count * 100, 100))
         pct = round((count / total_queries * 100), 1) if total_queries else 0
+        blocked_app = app_block_marker(ip, cat) in app_block_rules
+        action = "unblock" if blocked_app else "block"
+        button_label = "Unblock" if blocked_app else "Block"
+        button_class = "app-toggle unblock" if blocked_app else "app-toggle block"
+        blocked_badge = '<small class="app-blocked-badge">Blocked</small>' if blocked_app else ""
         app_rows += f"""
 <div class="device-app-row">
-  <div class="device-app-name">{icon_for_app(cat)}<span>{h(cat)}</span></div>
+  <div class="device-app-name">{icon_for_app(cat)}<span>{h(cat)}</span>{blocked_badge}</div>
   <div class="device-app-bar"><div style="width:{width}%"></div></div>
   <b>{count}</b>
   <span>{pct}%</span>
+  <form class="app-toggle-form" method="post" action="/device/{h(ip)}/app-block">
+    {csrf_input()}
+    <input type="hidden" name="category" value="{h(cat)}">
+    <button class="{button_class}" type="submit" name="action" value="{action}">{button_label}</button>
+  </form>
 </div>
 """
 
@@ -3308,6 +3432,14 @@ def device(ip):
             f'title="Unlock and clear saved identity details">Locked <i class="fa-solid fa-lock-open"></i></button></form>'
         )
 
+    app_block_notice = ""
+    if request.args.get("app_blocked") == "1":
+        app_block_notice = '<div class="setup-ok">Application blocked for this device.</div>'
+    elif request.args.get("app_unblocked") == "1":
+        app_block_notice = '<div class="setup-ok">Application unblocked for this device.</div>'
+    elif request.args.get("app_block_failed") == "1":
+        app_block_notice = '<div class="setup-warning">Application block rule could not be changed. Check AdGuard settings/API access.</div>'
+
     body = f"""
 {topbar(h(device_name))}
 <style>
@@ -3332,10 +3464,15 @@ def device(ip):
 .tool-btn.green {{ color:#38f07b; border-color:rgba(50,240,120,.35); }}
 .tool-btn.yellow {{ color:#ffca3a; border-color:rgba(255,202,58,.35); }}
 .tool-btn.red {{ color:#ff4b6d; border-color:rgba(255,75,109,.35); }}
-.device-app-row {{ display:grid; grid-template-columns: 150px 1fr 70px 60px; gap:14px; align-items:center; margin:16px 0; }}
+.device-app-row {{ display:grid; grid-template-columns: 160px 1fr 70px 60px 94px; gap:14px; align-items:center; margin:16px 0; }}
 .device-app-name {{ display:flex; align-items:center; gap:10px; }}
 .device-app-bar {{ height:10px; border-radius:999px; background:rgba(130,170,200,.15); overflow:hidden; }}
 .device-app-bar div {{ height:100%; border-radius:999px; background:linear-gradient(90deg, #00a9ff, #20f0d0, #9b5cff); }}
+.app-toggle-form {{ margin:0; }}
+.app-toggle {{ width:94px; min-height:34px; border-radius:10px; font-weight:800; cursor:pointer; border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.04); color:#dff7ff; }}
+.app-toggle.block {{ color:#ffca3a; border-color:rgba(255,202,58,.38); background:rgba(255,202,58,.10); }}
+.app-toggle.unblock {{ color:#38f07b; border-color:rgba(50,240,120,.38); background:rgba(50,240,120,.10); }}
+.app-blocked-badge {{ display:inline-block; padding:2px 7px; border-radius:999px; color:#ffca3a; border:1px solid rgba(255,202,58,.32); background:rgba(255,202,58,.10); font-size:10px; font-weight:800; }}
 .device-scroll {{ max-height:440px; overflow:auto; }}
 .pill-open {{ display:inline-block; padding:3px 9px; border-radius:999px; border:1px solid rgba(62,240,120,.5); color:#52ef86; font-weight:700; }}
 .badge-lock {{ display:inline-block; padding:3px 8px; border-radius:999px; background:rgba(0,220,200,.16); color:#28e0d5; font-size:12px; font-weight:700; }}
@@ -3352,6 +3489,8 @@ def device(ip):
   .identity-line {{ grid-template-columns:1fr; gap:2px; margin:9px 0; }}
   .device-app-row {{ grid-template-columns:minmax(0, 1fr) auto; gap:10px; }}
   .device-app-name, .device-app-bar {{ grid-column:1 / -1; }}
+  .app-toggle-form {{ grid-column:1 / -1; }}
+  .app-toggle {{ width:100%; }}
 }}
 </style>
 
@@ -3368,8 +3507,9 @@ def device(ip):
 </div>
 
 <div class="device-grid-main">
-  <div class="panel">
+  <div class="panel" id="device-applications">
     <h2>Applications For This Device <span class="sub" style="float:right;">Total Queries: {total_queries}</span></h2>
+    {app_block_notice}
     {app_rows or 'No per-device app data yet. Wait for AdGuard querylog collection.'}
   </div>
 
