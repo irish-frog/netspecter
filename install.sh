@@ -105,7 +105,7 @@ cp systemd/netspecter-watchdog.timer "$SERVICE_DIR/netspecter-watchdog.timer"
 cp systemd/netspecter-speedtest.service "$SERVICE_DIR/netspecter-speedtest.service"
 cp systemd/netspecter-speedtest.timer "$SERVICE_DIR/netspecter-speedtest.timer"
 systemctl daemon-reload
-systemctl enable netspecter-web netspecter-collector netspecter-watchdog.timer netspecter-speedtest.timer
+systemctl enable --now netspecter-web netspecter-collector netspecter-watchdog.timer netspecter-speedtest.timer
 systemctl restart netspecter-web netspecter-collector
 systemctl restart netspecter-watchdog.timer
 systemctl restart netspecter-speedtest.timer
