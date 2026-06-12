@@ -1525,7 +1525,7 @@ def system_health():
         except Exception:
             collector_state = "Unknown"
 
-    if update_state == "running" and update_age is not None and update_age < 900:
+    if update_state == "running" and update_age is not None and update_age < 900 and collector_state != "OK":
         collector_state = "Updating"
     elif update_state == "finished" and update_age is not None and update_age < 180 and collector_state != "OK":
         collector_state = "Starting"
