@@ -2972,7 +2972,7 @@ def adguard_set_disallowed(ip, blocked=True):
 
 
 def app_block_marker(ip, category):
-    return f"! netspecter-app-block ip={ip} category={quote(str(category or 'Other'), safe='')}"
+    return f"# netspecter-app-block ip={ip} category={quote(str(category or 'Other'), safe='')}"
 
 
 def app_block_rule(ip, domain):
@@ -3043,7 +3043,7 @@ def app_domains_for_device(ip, category):
 
 
 def set_app_block(ip, category, blocked=True):
-    current_blocked, rules, detail = app_block_status(ip, category)
+    _current_blocked, rules, detail = app_block_status(ip, category)
     if not isinstance(rules, list):
         rules = []
 
@@ -3066,7 +3066,7 @@ def set_app_block(ip, category, blocked=True):
         cleaned.append(marker)
         cleaned.extend(app_block_rule(ip, domain) for domain in domains)
 
-    ok, resp = ag_post("/filtering/set_rules", cleaned)
+    ok, resp = ag_post("/filtering/set_rules", {"rules": cleaned})
     return ok, resp if ok else (resp or detail)
 
 
@@ -3077,7 +3077,9 @@ def toggle_device_app_block(ip):
 
     category = request.form.get("category", "Other").strip() or "Other"
     action = request.form.get("action", "block")
-    ok, _resp = set_app_block(ip, category, action == "block")
+    ok, resp = set_app_block(ip, category, action == "block")
+    if not ok:
+        session["app_block_error"] = str(resp.get("body") or resp.get("error") or resp)[:240] if isinstance(resp, dict) else str(resp)[:240]
     suffix = "app_blocked=1" if ok and action == "block" else "app_unblocked=1" if ok else "app_block_failed=1"
     return redirect(f"/device/{ip}?range={range_key()}&{suffix}#device-applications")
 
@@ -3438,7 +3440,8 @@ def device(ip):
     elif request.args.get("app_unblocked") == "1":
         app_block_notice = '<div class="setup-ok">Application unblocked for this device.</div>'
     elif request.args.get("app_block_failed") == "1":
-        app_block_notice = '<div class="setup-warning">Application block rule could not be changed. Check AdGuard settings/API access.</div>'
+        detail = session.pop("app_block_error", "")
+        app_block_notice = f'<div class="setup-warning">Application block rule could not be changed. {h(detail) if detail else "Check AdGuard settings/API access."}</div>'
 
     body = f"""
 {topbar(h(device_name))}
