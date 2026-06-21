@@ -1500,10 +1500,13 @@ def system_health():
     if psutil:
         cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory().percent
-        disk = psutil.disk_usage("/").percent
+        disk_usage = psutil.disk_usage("/")
+        disk = disk_usage.percent
+        disk_free_gb = round(disk_usage.free / 1024 / 1024 / 1024, 1)
         uptime_seconds = int(time.time() - psutil.boot_time())
     else:
         cpu = mem = disk = 0
+        disk_free_gb = 0
         uptime_seconds = 0
 
     uptime = f"{uptime_seconds // 86400}d {(uptime_seconds % 86400) // 3600}h"
@@ -1529,11 +1532,14 @@ def system_health():
         collector_state = "Updating"
     elif update_state == "finished" and update_age is not None and update_age < 180 and collector_state != "OK":
         collector_state = "Starting"
+    if disk >= 99 and collector_state != "OK":
+        collector_state = "Disk Full"
 
     return {
         "cpu": cpu,
         "mem": mem,
         "disk": disk,
+        "disk_free_gb": disk_free_gb,
         "db_size": db_size,
         "uptime": uptime,
         "last_seen": last_seen,
@@ -2230,6 +2236,8 @@ def dashboard_health_cards(health):
         collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="green">{health['collector_state']}</b></div></div>"""
     elif health["collector_state"] in ("Updating", "Starting"):
         collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-rotate fa-spin"></i><div><span>Collector</span><b class="yellow">{health['collector_state']}</b><small>Update in progress</small></div></div>"""
+    elif health["collector_state"] == "Disk Full":
+        collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-triangle-exclamation"></i><div><span>Collector</span><b class="red">{health['collector_state']}</b><small>Free disk space first</small></div></div>"""
     else:
         collector_card = f"""
 <form class="dash-card slim collector-restart-card" method="post" action="/collector/restart">
@@ -2240,7 +2248,7 @@ def dashboard_health_cards(health):
     return f"""
 <div class="dash-card slim"><i class="fa-solid fa-wave-square"></i><div><span>CPU</span><b class="blue">{health['cpu']}%</b></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-microchip purple"></i><div><span>Memory</span><b class="purple">{health['mem']}%</b></div></div>
-<div class="dash-card slim"><i class="fa-solid fa-hard-drive"></i><div><span>Disk / HDD</span><b class="{'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</b></div></div>
+<div class="dash-card slim"><i class="fa-solid fa-hard-drive"></i><div><span>Disk / HDD</span><b class="{'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</b><small>{health['disk_free_gb']} GB free</small></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-database"></i><div><span>Database</span><b class="teal">{health['db_size']} MB</b></div></div>
 {collector_card}
 <div class="dash-card slim"><i class="fa-regular fa-clock"></i><div><span>Uptime</span><b>{health['uptime']}</b></div></div>
@@ -2252,6 +2260,8 @@ def collector_system_card(health):
         return f"""<div class="card"><div class="label">Collector</div><span class="big green">{health['collector_state']}</span></div>"""
     if health["collector_state"] in ("Updating", "Starting"):
         return f"""<div class="card"><div class="label">Collector</div><span class="big yellow">{health['collector_state']}</span><p class="sub">Update in progress. The collector will restart automatically.</p></div>"""
+    if health["collector_state"] == "Disk Full":
+        return f"""<div class="card"><div class="label">Collector</div><span class="big red">{health['collector_state']}</span><p class="sub">Free disk space before restarting the collector.</p></div>"""
     return f"""
 <form class="card" method="post" action="/collector/restart">
   {csrf_input()}
@@ -5729,7 +5739,7 @@ def system():
 <div class="grid">
   <div class="card"><div class="label">CPU</div><span class="big blue">{health['cpu']}%</span></div>
   <div class="card"><div class="label">Memory</div><span class="big purple">{health['mem']}%</span></div>
-  <div class="card"><div class="label">Disk / HDD</div><span class="big {'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</span></div>
+  <div class="card"><div class="label">Disk / HDD</div><span class="big {'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</span><p class="sub">{health['disk_free_gb']} GB free</p></div>
   <div class="card"><div class="label">Database</div><span class="big teal">{health['db_size']} MB</span></div>
   {collector_system_card(health)}
   <div class="card"><div class="label">Uptime</div><span class="big">{health['uptime']}</span></div>
