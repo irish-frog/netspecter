@@ -755,6 +755,8 @@ def init_db(force=False):
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_ip ON traffic_intervals(day, ip)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_ts ON traffic_intervals(ip, ts)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ts ON traffic_intervals(ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_day_totals ON traffic_intervals(day, downloaded_mb, uploaded_mb, total_mb)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intervals_ip_day_totals ON traffic_intervals(ip, day, downloaded_mb, uploaded_mb, total_mb)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS estimated_app_traffic (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -807,6 +809,7 @@ def init_db(force=False):
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day_category ON dns_querylog(day, category)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS dns_import_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
