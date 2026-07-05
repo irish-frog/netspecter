@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 import requests
-from flask import Flask, request, redirect, Response, session, g
+from flask import Flask, request, redirect, Response, session, g, jsonify
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -527,12 +527,19 @@ def require_login():
         return None
 
     if not admin_password_set():
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "setup_required"}), 409
         return redirect("/setup-admin")
 
     if session.get("authenticated"):
         if request.endpoint not in ["settings", "logout"] and setup_missing_items():
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "setup_required"}), 409
             return redirect("/settings?setup=1")
         return None
+
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "login_required"}), 401
 
     return redirect("/login")
 
