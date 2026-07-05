@@ -2201,51 +2201,47 @@ def api_dashboard_summary():
             SUM(downloaded_mb) AS downloaded,
             SUM(uploaded_mb) AS uploaded,
             SUM(total_mb) AS total,
-            COUNT(DISTINCT ip) AS active
+            COUNT(*) AS rows_seen
         FROM traffic_intervals
         WHERE day>=?
         """,
         (start_day,),
     )
-    if range_days() <= 7:
-        dns_rows = cached_query(
-            f"dashboard_summary_dns:{start_day}",
-            30,
-            "SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=?",
-            (start_day,),
-        )
-        blocked_rows = cached_query(
-            f"dashboard_summary_blocked:{start_day}",
-            30,
-            """
-            SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains
-            FROM dns_querylog
-            WHERE day>=? AND blocked=1
-            """,
-            (start_day,),
-        )
-    else:
-        dns_rows = cached_query(
-            f"dashboard_summary_dns_fast:{start_day}",
-            30,
-            "SELECT COUNT(*) AS total FROM dns_querylog WHERE day>=?",
-            (start_day,),
-        )
-        blocked_rows = cached_query(
-            f"dashboard_summary_blocked_fast:{start_day}",
-            30,
-            "SELECT COUNT(*) AS total FROM dns_querylog WHERE day>=? AND blocked=1",
-            (start_day,),
-        )
+    dns_rows = cached_query(
+        f"dashboard_summary_dns_fast:{start_day}",
+        30,
+        "SELECT COUNT(*) AS total FROM dns_querylog WHERE day>=?",
+        (start_day,),
+    )
+    blocked_rows = cached_query(
+        f"dashboard_summary_blocked_fast:{start_day}",
+        30,
+        "SELECT COUNT(*) AS total FROM dns_querylog WHERE day>=? AND blocked=1",
+        (start_day,),
+    )
     traffic = traffic_rows[0] if traffic_rows else {}
     down = round(float(traffic.get("downloaded") or 0), 2)
     up = round(float(traffic.get("uploaded") or 0), 2)
     total = round(float(traffic.get("total") or 0), 2)
-    active = int(traffic.get("active") or 0)
+    active_rows = cached_query(
+        f"dashboard_summary_active:{start_day}",
+        30,
+        """
+        SELECT COUNT(*) AS active
+        FROM (
+            SELECT ip
+            FROM traffic_intervals
+            WHERE day>=?
+            GROUP BY ip
+        )
+        """,
+        (start_day,),
+    )
+    active = int(active_rows[0]["active"] or 0) if active_rows else 0
     dns_total = int(dns_rows[0]["total"] or 0) if dns_rows else 0
-    unique_domains = int(dns_rows[0].get("domains") or 0) if dns_rows else 0
+    unique_domains = 0
     blocked = int(blocked_rows[0]["total"] or 0) if blocked_rows else 0
-    blocked_domains = int(blocked_rows[0].get("domains") or 0) if blocked_rows else 0
+    blocked_domains = 0
     blocked_pct = round((blocked / dns_total * 100), 1) if dns_total else 0
 
     return {
