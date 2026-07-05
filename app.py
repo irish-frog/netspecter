@@ -810,6 +810,8 @@ def init_db(force=False):
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day ON dns_querylog(day)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_client ON dns_querylog(client)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day_category ON dns_querylog(day, category)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day_domain ON dns_querylog(day, domain)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dns_day_blocked_domain ON dns_querylog(day, blocked, domain)")
     con.execute("""
         CREATE TABLE IF NOT EXISTS dns_import_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2190,18 +2192,45 @@ def api_update_status():
 @app.route("/api/dashboard-summary")
 def api_dashboard_summary():
     """Refresh accumulated dashboard counters from measured history."""
-    down, up, total, active, blocked, _top = totals()
     start_day = range_start_day()
-    dns_rows = query(
+    traffic_rows = cached_query(
+        f"dashboard_summary_traffic:{start_day}",
+        30,
+        """
+        SELECT
+            SUM(downloaded_mb) AS downloaded,
+            SUM(uploaded_mb) AS uploaded,
+            SUM(total_mb) AS total,
+            COUNT(DISTINCT ip) AS active
+        FROM traffic_intervals
+        WHERE day>=?
+        """,
+        (start_day,),
+    )
+    dns_rows = cached_query(
+        f"dashboard_summary_dns:{start_day}",
+        30,
         "SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=?",
         (start_day,),
     )
-    blocked_rows = query(
-        "SELECT COUNT(DISTINCT domain) AS domains FROM dns_querylog WHERE day>=? AND blocked=1",
+    blocked_rows = cached_query(
+        f"dashboard_summary_blocked:{start_day}",
+        30,
+        """
+        SELECT COUNT(*) AS total, COUNT(DISTINCT domain) AS domains
+        FROM dns_querylog
+        WHERE day>=? AND blocked=1
+        """,
         (start_day,),
     )
+    traffic = traffic_rows[0] if traffic_rows else {}
+    down = round(float(traffic.get("downloaded") or 0), 2)
+    up = round(float(traffic.get("uploaded") or 0), 2)
+    total = round(float(traffic.get("total") or 0), 2)
+    active = int(traffic.get("active") or 0)
     dns_total = int(dns_rows[0]["total"] or 0) if dns_rows else 0
     unique_domains = int(dns_rows[0]["domains"] or 0) if dns_rows else 0
+    blocked = int(blocked_rows[0]["total"] or 0) if blocked_rows else 0
     blocked_domains = int(blocked_rows[0]["domains"] or 0) if blocked_rows else 0
     blocked_pct = round((blocked / dns_total * 100), 1) if dns_total else 0
 
@@ -2534,9 +2563,18 @@ def dashboard():
 <script>
 let dashboardTrafficChart = null;
 const dashboardFastMode = {json.dumps(fast_page_mode)};
+async function dashboardFetch(url, timeoutMs = 8000) {{
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {{
+    return await fetch(url, {{cache: "no-store", signal: controller.signal}});
+  }} finally {{
+    clearTimeout(timer);
+  }}
+}}
 async function loadDashboardSummary() {{
   try {{
-    const response = await fetch("/api/dashboard-summary?range={range_key()}", {{cache: "no-store"}});
+    const response = await dashboardFetch("/api/dashboard-summary?range={range_key()}");
     if (!response.ok) return;
     const data = await response.json();
     const setText = (id, value) => {{
@@ -2560,6 +2598,8 @@ async function loadDashboardSummary() {{
     if (loading) loading.classList.add("hidden");
   }} catch (error) {{
     console.log("Dashboard summary refresh failed:", error);
+    const loading = document.getElementById("dashboardSummaryLoading");
+    if (loading) loading.classList.add("hidden");
   }}
 }}
 async function loadDashboardTraffic() {{
@@ -2570,7 +2610,7 @@ async function loadDashboardTraffic() {{
     }}
     const canvas = document.getElementById("dashboardTrafficChart");
     if (!canvas) return;
-    const response = await fetch("/api/history?period={dashboard_period}", {{cache: "no-store"}});
+    const response = await dashboardFetch("/api/history?period={dashboard_period}", 10000);
     if (!response.ok) {{
       console.log("Dashboard traffic graph request failed");
       return;
@@ -2604,7 +2644,7 @@ async function loadDashboardTraffic() {{
 }}
 async function loadDashboardApps() {{
   try {{
-    const response = await fetch("/api/dashboard-apps?range={range_key()}", {{cache: "no-store"}});
+    const response = await dashboardFetch("/api/dashboard-apps?range={range_key()}");
     if (!response.ok) return;
     const data = await response.json();
     const el = document.getElementById("dashboardTopApps");
@@ -2615,7 +2655,7 @@ async function loadDashboardApps() {{
 }}
 async function loadDashboardHealth() {{
   try {{
-    const response = await fetch("/api/dashboard-health", {{cache: "no-store"}});
+    const response = await dashboardFetch("/api/dashboard-health", 5000);
     if (!response.ok) return;
     const data = await response.json();
     const cards = document.getElementById("dashboardHealthCards");
