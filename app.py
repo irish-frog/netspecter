@@ -1015,11 +1015,14 @@ def public_ip(refresh=True):
 
 
 def fmt_mb(value):
-    """Format megabytes as MB below 1000, otherwise GB."""
+    """Format megabytes as MB, GB, or TB."""
     try:
         mb = float(value or 0)
     except Exception:
         mb = 0.0
+
+    if abs(mb) >= 1024 * 1024:
+        return f"{mb / (1024 * 1024):.2f} TB"
 
     if abs(mb) >= 1000:
         return f"{mb / 1024:.2f} GB"
@@ -1047,11 +1050,14 @@ def fmt_bps(value):
 
 
 def fmt_bytes_per_sec(value):
-    """Format bytes-per-second as KB/s, MB/s or GB/s."""
+    """Format bytes-per-second as KB/s, MB/s, GB/s or TB/s."""
     try:
         bps = float(value or 0)
     except Exception:
         bps = 0.0
+
+    if abs(bps) >= 1024 ** 4:
+        return f"{bps / (1024 ** 4):.2f} TB/s"
 
     if abs(bps) >= 1024 ** 3:
         return f"{bps / (1024 ** 3):.2f} GB/s"
