@@ -23,6 +23,11 @@ echo "[1/9] Refreshing package metadata and installing setup tools..."
 apt update
 apt install -y wget curl gnupg ca-certificates lsb-release iproute2
 
+BACKPORTS_LIST="/etc/apt/sources.list.d/bookworm-backports.list"
+if [ ! -f "$BACKPORTS_LIST" ]; then
+  echo "deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware" > "$BACKPORTS_LIST"
+fi
+
 echo "[2/9] Installing AdGuard Home first if requested..."
 if [ "$INSTALL_ADGUARD" = "1" ] && ! command -v AdGuardHome >/dev/null 2>&1 && [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
   if port_3000_in_use; then
@@ -50,9 +55,9 @@ if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok in
 fi
 apt remove -y speedtest-cli >/dev/null 2>&1 || true
 apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data snmp speedtest suricata-update
-
-if apt-cache policy suricata 2>/dev/null | grep -q 'Candidate:' && ! apt-cache policy suricata 2>/dev/null | grep -q 'Candidate: (none)'; then
-  apt install -y suricata
+apt update
+if apt-cache policy suricata 2>/dev/null | grep -q 'bookworm-backports'; then
+  apt install -y -t bookworm-backports suricata
   systemctl enable --now suricata || true
   mkdir -p /var/log/suricata
   chown -R suricata:suricata /var/log/suricata 2>/dev/null || true
@@ -60,7 +65,7 @@ if apt-cache policy suricata 2>/dev/null | grep -q 'Candidate:' && ! apt-cache p
     echo "Suricata config was not found after install; check the package install output." >&2
   fi
 else
-  echo "Suricata package is not available from this apt source set; installing suricata-update only."
+  echo "Suricata package is not available from bookworm-backports; installing suricata-update only."
 fi
 
 echo "[4/10] Creating folders..."
