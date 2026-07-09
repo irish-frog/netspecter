@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 from flask import Flask, request, redirect, Response, session, g, jsonify
@@ -112,6 +112,8 @@ DEFAULT_CONFIG = {
     "unifi_connector_url": "",
     "unifi_site_id": "",
     "unifi_api_key": "",
+    "unifi_username": "",
+    "unifi_password": "",
     "unifi_skip_tls_verify": False,
     "scheduled_speedtests_per_day": 0,
     "ids_unknown_only": False,
@@ -128,10 +130,10 @@ DEFAULT_CONFIG = {
     "ids_email_cooldown_minutes": 30,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password", "snmp_community", "mqtt_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
-    "unifi_api_key", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
+    "unifi_api_key", "unifi_username", "unifi_password", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
     "ids_unknown_only", "ids_excluded_ips", "ids_banned_ips",
     "ids_email_enabled", "smtp_host", "smtp_port", "smtp_security",
     "smtp_username", "smtp_password", "smtp_from", "smtp_to",
@@ -5320,6 +5322,54 @@ def unifi_verify_tls(config):
     return verify
 
 
+def unifi_origin(base):
+    parsed = urlsplit(str(base or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def unifi_auth_mode(config, base):
+    username = str(config.get("unifi_username", "") or "").strip()
+    password = str(config.get("unifi_password", "") or "").strip()
+    api_key = str(config.get("unifi_api_key", "") or "").strip()
+    if "api.ui.com" not in str(base or "") and username and password:
+        return "local_session"
+    if api_key:
+        return "api_key"
+    if username and password:
+        return "local_session"
+    return "none"
+
+
+def unifi_request(config, base, url, params=None):
+    headers = {"Accept": "application/json"}
+    verify = unifi_verify_tls(config)
+    mode = unifi_auth_mode(config, base)
+    if mode == "api_key":
+        headers["X-API-Key"] = str(config.get("unifi_api_key", "") or "").strip()
+        return requests.get(url, params=params, headers=headers, timeout=12, verify=verify)
+    if mode == "local_session":
+        origin = unifi_origin(base)
+        if not origin:
+            raise RuntimeError("UniFi gateway URL is not valid.")
+        session = requests.Session()
+        login = session.post(
+            f"{origin}/api/auth/login",
+            json={
+                "username": str(config.get("unifi_username", "") or "").strip(),
+                "password": str(config.get("unifi_password", "") or "").strip(),
+            },
+            headers=headers,
+            timeout=12,
+            verify=verify,
+        )
+        if login.status_code not in (200, 201):
+            return login
+        return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+    raise RuntimeError("Enter a UniFi API key or local UniFi username/password first.")
+
+
 def unifi_json_response(result):
     content_type = str(result.headers.get("Content-Type", "") or "").lower()
     try:
@@ -5354,19 +5404,12 @@ def unifi_site_label(site, index):
 
 def find_unifi_site(config):
     bases = unifi_connector_bases(config)
-    api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not bases or not api_key:
-        return False, "Enter the Connector URL and API key first."
+    if not bases:
+        return False, "Enter the Connector URL first."
     try:
         failure = ""
         for base in bases:
-            result = requests.get(
-                unifi_site_endpoint(base),
-                params={"offset": 0, "limit": 100},
-                headers={"Accept": "application/json", "X-API-Key": api_key},
-                timeout=12,
-                verify=unifi_verify_tls(config),
-            )
+            result = unifi_request(config, base, unifi_site_endpoint(base), params={"offset": 0, "limit": 100})
             if result.status_code != 200:
                 failure = f"UniFi API returned HTTP {result.status_code}. Check the URL, API key, and selected site permissions."
                 continue
@@ -5399,18 +5442,12 @@ def check_unifi_connection(config):
     if not config.get("unifi_enabled"):
         return False, "UniFi integration is disabled."
     bases = unifi_connector_bases(config)
-    api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not bases or not config.get("unifi_site_id") or not api_key:
-        return False, "Enter the Connector URL, site ID, and API key first."
+    if not bases or not config.get("unifi_site_id"):
+        return False, "Enter the Connector URL and site ID first."
     try:
         failure = ""
         for base in bases:
-            result = requests.get(
-                unifi_client_endpoint(config, base),
-                headers={"Accept": "application/json", "X-API-Key": api_key},
-                timeout=12,
-                verify=unifi_verify_tls(config),
-            )
+            result = unifi_request(config, base, unifi_client_endpoint(config, base))
             if result.status_code != 200:
                 failure = f"UniFi API returned HTTP {result.status_code}." + unifi_cloud_client_hint(base, result.status_code)
                 continue
@@ -5443,6 +5480,16 @@ def integrations():
             c["unifi_api_key"] = api_key
         if request.form.get("clear_unifi_key") == "1":
             c["unifi_api_key"] = ""
+        username = request.form.get("unifi_username", "").strip()
+        if username:
+            c["unifi_username"] = username
+        if request.form.get("clear_unifi_username") == "1":
+            c["unifi_username"] = ""
+        password = request.form.get("unifi_password", "")
+        if password:
+            c["unifi_password"] = password
+        if request.form.get("clear_unifi_password") == "1":
+            c["unifi_password"] = ""
         try:
             c["scheduled_speedtests_per_day"] = min(5, max(0, int(request.form.get("scheduled_speedtests_per_day", "0"))))
         except ValueError:
@@ -5490,6 +5537,14 @@ def integrations():
     <input name="unifi_api_key" type="password" placeholder="Leave blank to keep saved API key">
     <small>The API key is encrypted in NetSpecter's local config and is never written to GitHub.</small>
     <label><input type="checkbox" name="clear_unifi_key" value="1" style="width:auto"> Clear saved UniFi API key</label>
+    <label>Local UniFi Username</label>
+    <input name="unifi_username" value="{h(c.get('unifi_username', ''))}" placeholder="Only needed for local gateway auth">
+    <small>Use this with the local gateway URL if the cloud API key can list sites but cannot fetch connected clients.</small>
+    <label>Local UniFi Password</label>
+    <input name="unifi_password" type="password" placeholder="Leave blank to keep saved local UniFi password">
+    <small>The local UniFi password is encrypted in NetSpecter's local config and used only for gateway login.</small>
+    <label><input type="checkbox" name="clear_unifi_username" value="1" style="width:auto"> Clear saved UniFi username</label>
+    <label><input type="checkbox" name="clear_unifi_password" value="1" style="width:auto"> Clear saved UniFi password</label>
 
     <h2 style="margin-top:28px;">Speed Test History (Optional)</h2>
     <p>Manual speed tests are always stored. Scheduled tests consume internet data, so automatic runs are off unless you enable them here.</p>

@@ -290,6 +290,7 @@ Configure it from Integrations:
 * Enable UniFi Device Discovery
 * Enter `https://api.ui.com` for UniFi cloud API keys, or the connector URL for your local gateway
 * Enter the API key
+* If the cloud API can list sites but cannot return connected clients, enter your local UniFi username/password and use the local gateway URL instead
 * Use Find Site Automatically, or enter the site ID manually
 * Enable the self-signed certificate option only for local UniFi gateways that need it
 

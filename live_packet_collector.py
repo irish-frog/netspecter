@@ -37,7 +37,7 @@ import time
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -83,7 +83,7 @@ COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
 IDS_EMAIL_STATE_PATH = DATA_DIR / "ids_email_state.json"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password", "snmp_community", "mqtt_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
 collector_lock_handle = None
 
 
@@ -122,6 +122,8 @@ DEFAULT_CONFIG = {
     "unifi_connector_url": "",
     "unifi_site_id": "",
     "unifi_api_key": "",
+    "unifi_username": "",
+    "unifi_password": "",
     "unifi_skip_tls_verify": False,
     "ids_unknown_only": False,
     "ids_excluded_ips": [],
@@ -411,6 +413,54 @@ def unifi_verify_tls(config):
     return verify
 
 
+def unifi_origin(base):
+    parsed = urlsplit(str(base or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def unifi_auth_mode(config, base):
+    username = str(config.get("unifi_username", "") or "").strip()
+    password = str(config.get("unifi_password", "") or "").strip()
+    api_key = str(config.get("unifi_api_key", "") or "").strip()
+    if "api.ui.com" not in str(base or "") and username and password:
+        return "local_session"
+    if api_key:
+        return "api_key"
+    if username and password:
+        return "local_session"
+    return "none"
+
+
+def unifi_request(config, base, url, params=None):
+    headers = {"Accept": "application/json"}
+    verify = unifi_verify_tls(config)
+    mode = unifi_auth_mode(config, base)
+    if mode == "api_key":
+        headers["X-API-Key"] = str(config.get("unifi_api_key", "") or "").strip()
+        return requests.get(url, params=params, headers=headers, timeout=12, verify=verify)
+    if mode == "local_session":
+        origin = unifi_origin(base)
+        if not origin:
+            raise RuntimeError("UniFi gateway URL is not valid.")
+        session = requests.Session()
+        login = session.post(
+            f"{origin}/api/auth/login",
+            json={
+                "username": str(config.get("unifi_username", "") or "").strip(),
+                "password": str(config.get("unifi_password", "") or "").strip(),
+            },
+            headers=headers,
+            timeout=12,
+            verify=verify,
+        )
+        if login.status_code not in (200, 201):
+            return login
+        return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+    raise RuntimeError("UniFi credentials are not configured.")
+
+
 def unifi_cloud_client_hint(base, status_code):
     if "api.ui.com" not in str(base or ""):
         return ""
@@ -430,8 +480,7 @@ def refresh_unifi_clients(config):
 
     bases = unifi_connector_bases(config)
     site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
-    api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if not bases or not site_id or not api_key:
+    if not bases or not site_id:
         return
 
     imported = 0
@@ -444,12 +493,11 @@ def refresh_unifi_clients(config):
             payload = None
             failure = ""
             for base in ([working_base] if working_base else bases):
-                response = requests.get(
+                response = unifi_request(
+                    config,
+                    base,
                     f"{base}/v1/sites/{site_id}/clients",
                     params={"offset": offset, "limit": 100},
-                    headers={"Accept": "application/json", "X-API-Key": api_key},
-                    timeout=12,
-                    verify=unifi_verify_tls(config),
                 )
                 if response.status_code != 200:
                     failure = f"HTTP {response.status_code}" + unifi_cloud_client_hint(base, response.status_code)
