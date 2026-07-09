@@ -411,6 +411,14 @@ def unifi_verify_tls(config):
     return verify
 
 
+def unifi_cloud_client_hint(base, status_code):
+    if "api.ui.com" not in str(base or ""):
+        return ""
+    if int(status_code or 0) == 404:
+        return " UniFi cloud site lookup works, but connected-client discovery needs the local gateway URL, for example https://192.168.99.1/proxy/network/integration."
+    return ""
+
+
 def refresh_unifi_clients(config):
     """Optionally import connected client inventory through the official UniFi API."""
     global unifi_clients_refreshed_at
@@ -444,7 +452,7 @@ def refresh_unifi_clients(config):
                     verify=unifi_verify_tls(config),
                 )
                 if response.status_code != 200:
-                    failure = f"HTTP {response.status_code}"
+                    failure = f"HTTP {response.status_code}" + unifi_cloud_client_hint(base, response.status_code)
                     continue
                 try:
                     payload = response.json()

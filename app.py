@@ -5305,6 +5305,14 @@ def unifi_client_endpoint(config, base=None):
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=25"
 
 
+def unifi_cloud_client_hint(base, status_code):
+    if "api.ui.com" not in str(base or ""):
+        return ""
+    if int(status_code or 0) == 404:
+        return " UniFi cloud site lookup works, but connected-client discovery needs the local gateway URL, for example https://192.168.99.1/proxy/network/integration."
+    return ""
+
+
 def unifi_verify_tls(config):
     verify = not bool(config.get("unifi_skip_tls_verify"))
     if not verify:
@@ -5404,7 +5412,7 @@ def check_unifi_connection(config):
                 verify=unifi_verify_tls(config),
             )
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}."
+                failure = f"UniFi API returned HTTP {result.status_code}." + unifi_cloud_client_hint(base, result.status_code)
                 continue
             payload, response_error = unifi_json_response(result)
             if response_error:
