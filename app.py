@@ -5643,11 +5643,17 @@ def reverse_proxy():
 
     rows = ""
     for entry in entries:
+        direct_url = f"http://{entry['hostname']}:{entry['port']}"
+        proxy_url = f"http://{entry['hostname']}"
+        open_url = proxy_url if enabled else direct_url
         rows += f"""
 <tr>
   <td><b>{h(entry['hostname'])}</b></td>
   <td>{h(entry['target'])}:{entry['port']}</td>
-  <td><a href="http://{h(entry['hostname'])}" target="_blank">Open</a></td>
+  <td>
+    <a href="{h(open_url)}" target="_blank">Open</a>
+    <small>{h(open_url)}</small>
+  </td>
   <td>
     <form method="post" onsubmit="return confirm('Remove reverse proxy host {h(entry['hostname'])}?');">
       {csrf_input()}
