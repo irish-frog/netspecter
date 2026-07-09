@@ -229,6 +229,7 @@ The installer:
 
 * Updates Debian and installs initial setup tools
 * Installs AdGuard Home and continues while its browser setup remains available
+* Installs Suricata for IDS alert logging
 * Installs bridge, packet capture, nftables, SNMP, speed test, and Python runtime dependencies
 * Installs NetSpecter to `/opt/netspecter`
 * Creates config in `/etc/netspecter`
