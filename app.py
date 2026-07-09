@@ -5343,7 +5343,7 @@ def unifi_cached_session(config, base, headers, verify):
         wait_seconds = max(1, int(cached["blocked_until"] - now))
         raise RuntimeError(f"UniFi login is being rate limited. Wait about {wait_seconds} seconds and try again.")
     if cached and now < cached.get("expires_at", 0):
-        return cached["session"]
+        return cached["session"], None
 
     origin = unifi_origin(base)
     if not origin:
