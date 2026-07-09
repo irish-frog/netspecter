@@ -25,7 +25,6 @@ from urllib.parse import quote, unquote
 import requests
 from flask import Flask, request, redirect, Response, session, g, jsonify
 from werkzeug.exceptions import HTTPException
-from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -86,12 +85,6 @@ DEFAULT_CONFIG = {
     "adguard_querylog_interval_seconds": 15,
     "web_host": "0.0.0.0",
     "web_port": 5050,
-    "trust_proxy_headers": True,
-    "reverse_proxy_enabled": False,
-    "reverse_proxy_entries": [
-        {"hostname": "netspecter", "target": "127.0.0.1", "port": 5050},
-        {"hostname": "kuma", "target": "127.0.0.1", "port": 3001},
-    ],
     "auth_enabled": True,
     "admin_user": "admin",
     "admin_password_hash": "",
@@ -134,18 +127,6 @@ DEFAULT_CONFIG = {
     "smtp_to": "",
     "ids_email_cooldown_minutes": 30,
 }
-
-
-def trust_proxy_headers_enabled():
-    try:
-        data = json.loads(CONFIG_PATH.read_text())
-        return bool(data.get("trust_proxy_headers", DEFAULT_CONFIG["trust_proxy_headers"]))
-    except Exception:
-        return bool(DEFAULT_CONFIG["trust_proxy_headers"])
-
-
-if trust_proxy_headers_enabled():
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "smtp_password", "snmp_community", "mqtt_password"}
 INTEGRATION_SETTINGS_KEYS = {
@@ -348,92 +329,6 @@ def cfg_list(value):
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
     return [x.strip() for x in str(value or "").split(",") if x.strip()]
-
-
-HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$")
-IP_OR_HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,253}$")
-CADDYFILE_PATH = Path(os.environ.get("NETSPECTER_CADDYFILE", "/etc/caddy/Caddyfile"))
-CADDY_BLOCK_START = "# BEGIN NETSPECTER REVERSE PROXY"
-CADDY_BLOCK_END = "# END NETSPECTER REVERSE PROXY"
-
-
-def normalize_reverse_proxy_entries(entries):
-    normalized = []
-    seen = set()
-    if not isinstance(entries, list):
-        return normalized
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        hostname = str(entry.get("hostname", "")).strip().lower()
-        target = str(entry.get("target", "")).strip() or "127.0.0.1"
-        try:
-            port = int(entry.get("port", 0))
-        except Exception:
-            continue
-        if not HOSTNAME_RE.match(hostname):
-            continue
-        if not IP_OR_HOST_RE.match(target):
-            continue
-        if port < 1 or port > 65535:
-            continue
-        if hostname in seen:
-            continue
-        seen.add(hostname)
-        normalized.append({"hostname": hostname, "target": target, "port": port})
-    return normalized
-
-
-def reverse_proxy_config_block(entries):
-    entries = normalize_reverse_proxy_entries(entries)
-    lines = [CADDY_BLOCK_START]
-    if not entries:
-        lines.append("# No NetSpecter reverse proxy hosts configured.")
-    for entry in entries:
-        lines.extend([
-            f"{entry['hostname']} {{",
-            f"    reverse_proxy {entry['target']}:{entry['port']}",
-            "}",
-            "",
-        ])
-    lines.append(CADDY_BLOCK_END)
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def caddy_installed():
-    return Path("/usr/bin/caddy").exists() or Path("/usr/local/bin/caddy").exists()
-
-
-def apply_reverse_proxy_config(entries, enabled):
-    if not CADDYFILE_PATH.parent.exists():
-        return False, f"Caddy config folder does not exist: {CADDYFILE_PATH.parent}"
-
-    existing = CADDYFILE_PATH.read_text() if CADDYFILE_PATH.exists() else ""
-    pattern = re.compile(
-        rf"\n?{re.escape(CADDY_BLOCK_START)}.*?{re.escape(CADDY_BLOCK_END)}\n?",
-        re.DOTALL,
-    )
-    existing = pattern.sub("\n", existing).strip()
-
-    if enabled:
-        block = reverse_proxy_config_block(entries)
-        new_text = (existing + "\n\n" + block).strip() + "\n"
-    else:
-        new_text = existing.strip() + ("\n" if existing.strip() else "")
-
-    try:
-        CADDYFILE_PATH.write_text(new_text)
-    except Exception as e:
-        return False, f"Could not write {CADDYFILE_PATH}: {e}"
-
-    if not caddy_installed():
-        return True, "Saved config, but Caddy is not installed on this appliance."
-
-    try:
-        subprocess.run(["systemctl", "reload", "caddy"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
-        return True, "Caddy reloaded."
-    except Exception as e:
-        return False, f"Config saved, but Caddy reload failed: {e}"
 
 
 def default_gateway_from_prefix(prefix):
@@ -1891,7 +1786,6 @@ def shell(title, body, active="Dashboard"):
         ("AdGuard", "/adguard", "fa-shield-halved"),
         ("Speed Tests", "/speed-tests", "fa-gauge-high"),
         ("Integrations", "/integrations", "fa-plug"),
-        ("Reverse Proxy", "/reverse-proxy", "fa-route"),
         ("Health", "/health", "fa-heart-pulse"),
         ("Telemetry", "/telemetry", "fa-satellite-dish"),
         ("Settings", "/settings", "fa-gear"),
@@ -5573,157 +5467,10 @@ def integrations():
     return shell("Integrations", body, "Integrations")
 
 
-@app.route("/reverse-proxy", methods=["GET", "POST"])
-def reverse_proxy():
-    c = cfg()
-    entries = normalize_reverse_proxy_entries(c.get("reverse_proxy_entries", []))
-    c["reverse_proxy_entries"] = entries
-    enabled = bool(c.get("reverse_proxy_enabled", False))
-
-    if request.method == "POST":
-        action = request.form.get("action", "")
-
-        if action == "add":
-            hostname = request.form.get("hostname", "").strip().lower()
-            target = request.form.get("target", "").strip() or "127.0.0.1"
-            port_raw = request.form.get("port", "").strip()
-            error = ""
-            try:
-                port = int(port_raw)
-            except Exception:
-                port = 0
-
-            if not HOSTNAME_RE.match(hostname):
-                error = "bad_host"
-            elif not IP_OR_HOST_RE.match(target):
-                error = "bad_target"
-            elif port < 1 or port > 65535:
-                error = "bad_port"
-            elif any(item["hostname"] == hostname for item in entries):
-                error = "duplicate"
-
-            if error:
-                return redirect(f"/reverse-proxy?error={error}")
-
-            entries.append({"hostname": hostname, "target": target, "port": port})
-            c["reverse_proxy_entries"] = entries
-
-        elif action == "remove":
-            hostname = request.form.get("hostname", "").strip().lower()
-            entries = [item for item in entries if item["hostname"] != hostname]
-            c["reverse_proxy_entries"] = entries
-
-        elif action == "enable":
-            enabled = True
-
-        elif action == "disable":
-            enabled = False
-
-        c["reverse_proxy_enabled"] = enabled
-        save_cfg(c)
-        ok, detail = apply_reverse_proxy_config(entries, enabled)
-        session["reverse_proxy_status"] = {"ok": ok, "detail": detail}
-        return redirect("/reverse-proxy?saved=1")
-
-    status = session.pop("reverse_proxy_status", None)
-    notice = ""
-    if status:
-        cls = "setup-ok" if status.get("ok") else "setup-warning"
-        notice = f'<div class="{cls}">{h(status.get("detail", ""))}</div>'
-    elif request.args.get("saved") == "1":
-        notice = '<div class="setup-ok">Reverse proxy settings saved.</div>'
-    elif request.args.get("error"):
-        errors = {
-            "bad_host": "Enter a local hostname, for example netspecter or kuma.",
-            "bad_target": "Target must be an IP address or hostname.",
-            "bad_port": "Port must be between 1 and 65535.",
-            "duplicate": "That hostname already exists.",
-        }
-        notice = f'<div class="setup-warning">{h(errors.get(request.args.get("error"), "Reverse proxy entry was not valid."))}</div>'
-
-    rows = ""
-    for entry in entries:
-        direct_url = f"http://{entry['hostname']}:{entry['port']}"
-        proxy_url = f"http://{entry['hostname']}"
-        open_url = proxy_url if enabled else direct_url
-        rows += f"""
-<tr>
-  <td><b>{h(entry['hostname'])}</b></td>
-  <td>{h(entry['target'])}:{entry['port']}</td>
-  <td>
-    <a href="{h(open_url)}" target="_blank">Open</a>
-    <small>{h(open_url)}</small>
-  </td>
-  <td>
-    <form method="post" onsubmit="return confirm('Remove reverse proxy host {h(entry['hostname'])}?');">
-      {csrf_input()}
-      <input type="hidden" name="hostname" value="{h(entry['hostname'])}">
-      <button type="submit" name="action" value="remove">Remove</button>
-    </form>
-  </td>
-</tr>
-"""
-    if not rows:
-        rows = "<tr><td colspan='4'>No reverse proxy hosts configured.</td></tr>"
-
-    generated = reverse_proxy_config_block(entries)
-    caddy_state = "Installed" if caddy_installed() else "Not installed"
-    enabled_label = "Enabled" if enabled else "Disabled"
-    toggle_action = "disable" if enabled else "enable"
-    toggle_label = "Disable Reverse Proxy" if enabled else "Enable Reverse Proxy"
-
-    body = f"""
-{topbar('Reverse Proxy')}
-<div class="panel settings">
-  {notice}
-  <h2>Reverse Proxy</h2>
-  <p class="sub">DNS rewrites in AdGuard point names to this appliance. This page manages the Caddy web proxy that removes ports from URLs.</p>
-  <div class="kpi-grid">
-    <div class="kpi"><span>Status</span><b>{enabled_label}</b></div>
-    <div class="kpi"><span>Caddy</span><b>{caddy_state}</b></div>
-    <div class="kpi"><span>Config</span><b>{h(str(CADDYFILE_PATH))}</b></div>
-  </div>
-  <form method="post">
-    {csrf_input()}
-    <button type="submit" name="action" value="{toggle_action}">{toggle_label}</button>
-  </form>
-</div>
-
-<div class="panel settings">
-  <h2>Add Host</h2>
-  <form method="post">
-    {csrf_input()}
-    <label>Hostname</label>
-    <input name="hostname" placeholder="netspecter">
-    <label>Target IP or Hostname</label>
-    <input name="target" value="127.0.0.1">
-    <label>Target Port</label>
-    <input name="port" value="5050">
-    <button type="submit" name="action" value="add">Add Reverse Proxy Host</button>
-  </form>
-</div>
-
-<div class="panel">
-  <h2>Configured Hosts</h2>
-  <table>
-    <tr><th>Hostname</th><th>Target</th><th>URL</th><th>Action</th></tr>
-    {rows}
-  </table>
-</div>
-
-<div class="panel">
-  <h2>Generated Caddy Block</h2>
-  <pre>{h(generated)}</pre>
-  <p class="sub">If AdGuard already uses port 80 on this appliance, move AdGuard's web UI to another port before enabling Caddy on port 80.</p>
-</div>
-"""
-    return shell("Reverse Proxy", body, "Reverse Proxy")
-
-
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     c = cfg()
-    hidden_settings = {"app_name", "tagline", "admin_password_hash", "reverse_proxy_enabled", "reverse_proxy_entries"} | INTEGRATION_SETTINGS_KEYS
+    hidden_settings = {"app_name", "tagline", "admin_password_hash"} | INTEGRATION_SETTINGS_KEYS
     editable_keys = [key for key in c.keys() if key not in hidden_settings]
 
     if request.method == "POST":

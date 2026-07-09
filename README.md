@@ -253,7 +253,7 @@ Open NetSpecter at:
 http://SERVER-IP:5050
 ```
 
-To use local names without ports, such as `http://netspecter` for NetSpecter and `http://kuma` for Uptime Kuma, add AdGuard DNS rewrites and manage Caddy from the NetSpecter **Reverse Proxy** page. See [Reverse Proxy And Local Names](REVERSE-PROXY.md).
+To use local names, add AdGuard DNS rewrites and keep the service port in the URL. For example, `netspecter -> SERVER-IP` opens as `http://netspecter:5050`.
 
 If no admin password exists, NetSpecter redirects to:
 
@@ -344,7 +344,7 @@ nslookup google.com YOUR-NETSPECTER-IP
 
 Requests should then appear in the AdGuard Query Log and in NetSpecter DNS/application views.
 
-For friendly local names, add AdGuard DNS rewrites such as `netspecter -> YOUR-NETSPECTER-IP`. DNS cannot include `:5050`; use the NetSpecter **Reverse Proxy** page when you want the proxy to know the port.
+For friendly local names, add AdGuard DNS rewrites such as `netspecter -> YOUR-NETSPECTER-IP`. DNS cannot include `:5050`, so keep the port in the browser URL: `http://netspecter:5050`.
 
 ---
 
