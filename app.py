@@ -5323,6 +5323,27 @@ def unifi_json_response(result):
         return None, detail
 
 
+def unifi_site_id(site):
+    if not isinstance(site, dict):
+        return ""
+    for key in ("id", "siteId", "site_id", "networkId", "network_id"):
+        value = str(site.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def unifi_site_label(site, index):
+    if not isinstance(site, dict):
+        return f"Site {index}"
+    name = str(site.get("name") or site.get("description") or site.get("displayName") or "").strip()
+    site_id = unifi_site_id(site)
+    label = name or f"Site {index}"
+    if site_id:
+        label += f" = {site_id}"
+    return label
+
+
 def find_unifi_site(config):
     bases = unifi_connector_bases(config)
     api_key = str(config.get("unifi_api_key", "") or "").strip()
@@ -5352,14 +5373,15 @@ def find_unifi_site(config):
                 (site for site in sites if str(site.get("name", "")).strip().lower() == "default"),
                 sites[0] if len(sites) == 1 else None,
             )
-            if not preferred or not preferred.get("id"):
-                names = ", ".join(str(site.get("name", "Unnamed")) for site in sites)
-                return False, f"Multiple sites found ({names}). Select the correct site ID manually."
+            if not preferred or not unifi_site_id(preferred):
+                labels = ", ".join(unifi_site_label(site, index) for index, site in enumerate(sites, start=1))
+                return False, f"Multiple UniFi sites found: {labels}. Copy the correct ID into UniFi Site ID and click Save and Test UniFi."
             changed_url = base != str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
             config["unifi_connector_url"] = base
-            config["unifi_site_id"] = str(preferred["id"]).strip()
+            config["unifi_site_id"] = unifi_site_id(preferred)
             adjusted = " Connector URL corrected automatically." if changed_url else ""
-            return True, f"Found UniFi site: {preferred.get('name', 'Default')}. Site ID saved.{adjusted}"
+            site_name = str(preferred.get("name") or preferred.get("description") or preferred.get("displayName") or "selected site").strip()
+            return True, f"Found UniFi site: {site_name}. Site ID saved.{adjusted}"
         return False, failure or "UniFi site lookup did not return a usable response."
     except Exception as error:
         return False, f"UniFi site lookup failed: {error}"
