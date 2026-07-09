@@ -288,7 +288,7 @@ If you own a UniFi console, NetSpecter can import client names, IP addresses, an
 Configure it from Integrations:
 
 * Enable UniFi Device Discovery
-* Enter the connector URL for your UniFi console or local gateway
+* Enter `https://api.ui.com` for UniFi cloud API keys, or the connector URL for your local gateway
 * Enter the API key
 * Use Find Site Automatically, or enter the site ID manually
 * Enable the self-signed certificate option only for local UniFi gateways that need it

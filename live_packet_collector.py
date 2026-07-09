@@ -397,6 +397,8 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
+    if "api.ui.com" in base:
+        return ["https://api.ui.com"]
     if "/proxy/network/integration" not in base and "/network/integration" in base:
         base = base.replace("/network/integration", "/proxy/network/integration", 1)
     return [base]

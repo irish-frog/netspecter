@@ -5284,9 +5284,17 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
+    if "api.ui.com" in base:
+        return ["https://api.ui.com"]
     if "/proxy/network/integration" not in base and "/network/integration" in base:
         base = base.replace("/network/integration", "/proxy/network/integration", 1)
     return [base]
+
+
+def unifi_site_endpoint(base):
+    if "api.ui.com" in base:
+        return f"{base}/v1/sites"
+    return f"{base}/v1/sites"
 
 
 def unifi_client_endpoint(config, base=None):
@@ -5324,14 +5332,14 @@ def find_unifi_site(config):
         failure = ""
         for base in bases:
             result = requests.get(
-                f"{base}/v1/sites",
+                unifi_site_endpoint(base),
                 params={"offset": 0, "limit": 100},
                 headers={"Accept": "application/json", "X-API-Key": api_key},
                 timeout=12,
                 verify=unifi_verify_tls(config),
             )
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}. The API key was not accepted for this URL."
+                failure = f"UniFi API returned HTTP {result.status_code}. Check the URL, API key, and selected site permissions."
                 continue
             payload, response_error = unifi_json_response(result)
             if response_error:
@@ -5441,8 +5449,8 @@ def integrations():
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
     <label>UniFi Network API URL</label>
-    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://gateway-address/proxy/network/integration">
-    <small>Use a local UniFi gateway URL where possible, or a remote api.ui.com connector URL. Do not add the site or clients part.</small>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com">
+    <small>Use https://api.ui.com for UniFi cloud API keys, or a local gateway URL such as https://gateway-address/proxy/network/integration.</small>
     <label><input type="checkbox" name="unifi_skip_tls_verify" value="1" style="width:auto"{skip_tls_checked}> Allow self-signed certificate for local UniFi gateway</label>
     <small>Enable this only when using your local gateway HTTPS address and its built-in certificate.</small>
     <label>UniFi Site ID</label>
