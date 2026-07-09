@@ -162,6 +162,9 @@ adguard_client_names = {}
 adguard_client_names_lock = threading.Lock()
 adguard_client_names_refreshed_at = 0.0
 unifi_clients_refreshed_at = 0.0
+UNIFI_SESSION_TTL_SECONDS = 900
+UNIFI_RATE_LIMIT_COOLDOWN_SECONDS = 60
+unifi_session_cache = {}
 NFT_FAMILY = "bridge"
 NFT_TABLE = "netspecter"
 NFT_CHAIN = "forward"
@@ -425,28 +428,77 @@ def unifi_auth_mode(config, base):
     return "none"
 
 
+def unifi_session_key(config, base):
+    return (
+        unifi_origin(base),
+        str(config.get("unifi_username", "") or "").strip(),
+        bool(config.get("unifi_skip_tls_verify")),
+    )
+
+
+def unifi_cached_session(config, base, headers, verify):
+    key = unifi_session_key(config, base)
+    now = time.monotonic()
+    cached = unifi_session_cache.get(key)
+    if cached and now < cached.get("blocked_until", 0):
+        raise RuntimeError("UniFi login is being rate limited. Try again shortly.")
+    if cached and now < cached.get("expires_at", 0):
+        return cached["session"], None
+
+    origin = unifi_origin(base)
+    if not origin:
+        raise RuntimeError("UniFi gateway URL is not valid.")
+
+    session = requests.Session()
+    login = session.post(
+        f"{origin}/api/auth/login",
+        json={
+            "username": str(config.get("unifi_username", "") or "").strip(),
+            "password": str(config.get("unifi_password", "") or "").strip(),
+        },
+        headers=headers,
+        timeout=12,
+        verify=verify,
+    )
+    if login.status_code == 429:
+        unifi_session_cache[key] = {
+            "session": session,
+            "expires_at": 0,
+            "blocked_until": now + UNIFI_RATE_LIMIT_COOLDOWN_SECONDS,
+        }
+        return None, login
+    if login.status_code not in (200, 201):
+        unifi_session_cache.pop(key, None)
+        return None, login
+
+    unifi_session_cache[key] = {
+        "session": session,
+        "expires_at": now + UNIFI_SESSION_TTL_SECONDS,
+        "blocked_until": 0,
+    }
+    return session, None
+
+
 def unifi_request(config, base, url, params=None):
     headers = {"Accept": "application/json"}
     verify = unifi_verify_tls(config)
     mode = unifi_auth_mode(config, base)
     if mode == "local_session":
-        origin = unifi_origin(base)
-        if not origin:
-            raise RuntimeError("UniFi gateway URL is not valid.")
-        session = requests.Session()
-        login = session.post(
-            f"{origin}/api/auth/login",
-            json={
-                "username": str(config.get("unifi_username", "") or "").strip(),
-                "password": str(config.get("unifi_password", "") or "").strip(),
-            },
-            headers=headers,
-            timeout=12,
-            verify=verify,
-        )
-        if login.status_code not in (200, 201):
+        session, login = unifi_cached_session(config, base, headers, verify)
+        if login is not None:
             return login
-        return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+        result = session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+        if result.status_code == 401:
+            unifi_session_cache.pop(unifi_session_key(config, base), None)
+            session, login = unifi_cached_session(config, base, headers, verify)
+            if login is not None:
+                return login
+            return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+        if result.status_code == 429:
+            cached = unifi_session_cache.get(unifi_session_key(config, base))
+            if cached:
+                cached["blocked_until"] = time.monotonic() + UNIFI_RATE_LIMIT_COOLDOWN_SECONDS
+        return result
     raise RuntimeError("UniFi credentials are not configured.")
 
 
