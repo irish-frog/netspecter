@@ -1,0 +1,12 @@
+# NetSpecter can generate and maintain this block from the Reverse Proxy page.
+# Add the matching hostnames as DNS rewrites in AdGuard Home.
+
+# BEGIN NETSPECTER REVERSE PROXY
+netspecter {
+    reverse_proxy 127.0.0.1:5050
+}
+
+kuma {
+    reverse_proxy 127.0.0.1:3001
+}
+# END NETSPECTER REVERSE PROXY
