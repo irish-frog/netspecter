@@ -294,7 +294,7 @@ class WebSecurityTests(unittest.TestCase):
         self.assertFalse(example["ids_email_enabled"])
         self.assertEqual([], example["ids_banned_ips"])
         self.assertEqual(0, example["scheduled_speedtests_per_day"])
-        self.assertIn("unifi_api_key", self.module.SENSITIVE_CONFIG_KEYS)
+        self.assertIn("unifi_password", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("smtp_password", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("snmp_community", self.module.SENSITIVE_CONFIG_KEYS)
         self.assertIn("mqtt_password", self.module.SENSITIVE_CONFIG_KEYS)

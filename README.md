@@ -255,6 +255,8 @@ http://SERVER-IP:5050
 
 To use local names, add AdGuard DNS rewrites and keep the service port in the URL. For example, `netspecter -> SERVER-IP` opens as `http://netspecter:5050`.
 
+UniFi device-name lookup uses the local gateway only. Enter a URL like `https://192.168.99.1/proxy/network/integration`, use a local UniFi username and password, and enable self-signed certificates if your gateway uses its built-in HTTPS cert.
+
 If no admin password exists, NetSpecter redirects to:
 
 ```text
@@ -288,13 +290,12 @@ If you own a UniFi console, NetSpecter can import client names, IP addresses, an
 Configure it from Integrations:
 
 * Enable UniFi Device Discovery
-* Enter `https://api.ui.com` for UniFi cloud API keys, or the connector URL for your local gateway
-* Enter the API key
-* If the cloud API can list sites but cannot return connected clients, enter your local UniFi username/password and use the local gateway URL instead
+* Enter the connector URL for your local gateway, such as `https://192.168.99.1/proxy/network/integration`
+* Enter the local UniFi username and password
 * Use Find Site Automatically, or enter the site ID manually
 * Enable the self-signed certificate option only for local UniFi gateways that need it
 
-The UniFi API key is encrypted in NetSpecter's local config and is never committed to GitHub.
+The local UniFi password is encrypted in NetSpecter's local config and is never committed to GitHub.
 
 ### SNMP And MQTT Telemetry
 

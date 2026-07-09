@@ -111,7 +111,6 @@ DEFAULT_CONFIG = {
     "unifi_enabled": False,
     "unifi_connector_url": "",
     "unifi_site_id": "",
-    "unifi_api_key": "",
     "unifi_username": "",
     "unifi_password": "",
     "unifi_skip_tls_verify": False,
@@ -130,10 +129,10 @@ DEFAULT_CONFIG = {
     "ids_email_cooldown_minutes": 30,
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
-    "unifi_api_key", "unifi_username", "unifi_password", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
+    "unifi_username", "unifi_password", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
     "ids_unknown_only", "ids_excluded_ips", "ids_banned_ips",
     "ids_email_enabled", "smtp_host", "smtp_port", "smtp_security",
     "smtp_username", "smtp_password", "smtp_from", "smtp_to",
@@ -5286,16 +5285,12 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
-    if "api.ui.com" in base:
-        return ["https://api.ui.com"]
     if "/proxy/network/integration" not in base and "/network/integration" in base:
         base = base.replace("/network/integration", "/proxy/network/integration", 1)
     return [base]
 
 
 def unifi_site_endpoint(base):
-    if "api.ui.com" in base:
-        return f"{base}/v1/sites"
     return f"{base}/v1/sites"
 
 
@@ -5305,14 +5300,6 @@ def unifi_client_endpoint(config, base=None):
     if not base or not site_id:
         return ""
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=25"
-
-
-def unifi_cloud_client_hint(base, status_code):
-    if "api.ui.com" not in str(base or ""):
-        return ""
-    if int(status_code or 0) == 404:
-        return " UniFi cloud site lookup works, but connected-client discovery needs the local gateway URL, for example https://192.168.99.1/proxy/network/integration."
-    return ""
 
 
 def unifi_verify_tls(config):
@@ -5332,11 +5319,6 @@ def unifi_origin(base):
 def unifi_auth_mode(config, base):
     username = str(config.get("unifi_username", "") or "").strip()
     password = str(config.get("unifi_password", "") or "").strip()
-    api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if "api.ui.com" not in str(base or "") and username and password:
-        return "local_session"
-    if api_key:
-        return "api_key"
     if username and password:
         return "local_session"
     return "none"
@@ -5346,9 +5328,6 @@ def unifi_request(config, base, url, params=None):
     headers = {"Accept": "application/json"}
     verify = unifi_verify_tls(config)
     mode = unifi_auth_mode(config, base)
-    if mode == "api_key":
-        headers["X-API-Key"] = str(config.get("unifi_api_key", "") or "").strip()
-        return requests.get(url, params=params, headers=headers, timeout=12, verify=verify)
     if mode == "local_session":
         origin = unifi_origin(base)
         if not origin:
@@ -5367,7 +5346,7 @@ def unifi_request(config, base, url, params=None):
         if login.status_code not in (200, 201):
             return login
         return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
-    raise RuntimeError("Enter a UniFi API key or local UniFi username/password first.")
+    raise RuntimeError("Enter a local UniFi username and password first.")
 
 
 def unifi_json_response(result):
@@ -5411,7 +5390,7 @@ def find_unifi_site(config):
         for base in bases:
             result = unifi_request(config, base, unifi_site_endpoint(base), params={"offset": 0, "limit": 100})
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}. Check the URL, API key, and selected site permissions."
+                failure = f"UniFi API returned HTTP {result.status_code}. Check the gateway URL, username, password, and selected site permissions."
                 continue
             payload, response_error = unifi_json_response(result)
             if response_error:
@@ -5449,7 +5428,7 @@ def check_unifi_connection(config):
         for base in bases:
             result = unifi_request(config, base, unifi_client_endpoint(config, base))
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}." + unifi_cloud_client_hint(base, result.status_code)
+                failure = f"UniFi API returned HTTP {result.status_code}."
                 continue
             payload, response_error = unifi_json_response(result)
             if response_error:
@@ -5475,11 +5454,6 @@ def integrations():
         c["unifi_connector_url"] = request.form.get("unifi_connector_url", "").strip()
         c["unifi_site_id"] = request.form.get("unifi_site_id", "").strip()
         c["unifi_skip_tls_verify"] = request.form.get("unifi_skip_tls_verify") == "1"
-        api_key = request.form.get("unifi_api_key", "")
-        if api_key:
-            c["unifi_api_key"] = api_key
-        if request.form.get("clear_unifi_key") == "1":
-            c["unifi_api_key"] = ""
         username = request.form.get("unifi_username", "").strip()
         if username:
             c["unifi_username"] = username
@@ -5526,20 +5500,16 @@ def integrations():
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
     <label>UniFi Network API URL</label>
-    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://api.ui.com">
-    <small>Use https://api.ui.com for UniFi cloud API keys, or a local gateway URL such as https://gateway-address/proxy/network/integration.</small>
+    <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://gateway-address/proxy/network/integration">
+    <small>Use your local gateway URL, such as https://gateway-address/proxy/network/integration.</small>
     <label><input type="checkbox" name="unifi_skip_tls_verify" value="1" style="width:auto"{skip_tls_checked}> Allow self-signed certificate for local UniFi gateway</label>
     <small>Enable this only when using your local gateway HTTPS address and its built-in certificate.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
-    <small>Leave this blank and use Find Site Automatically after entering your API key.</small>
-    <label>UniFi API Key</label>
-    <input name="unifi_api_key" type="password" placeholder="Leave blank to keep saved API key">
-    <small>The API key is encrypted in NetSpecter's local config and is never written to GitHub.</small>
-    <label><input type="checkbox" name="clear_unifi_key" value="1" style="width:auto"> Clear saved UniFi API key</label>
+    <small>Leave this blank and use Find Site Automatically after entering the local gateway credentials below.</small>
     <label>Local UniFi Username</label>
     <input name="unifi_username" value="{h(c.get('unifi_username', ''))}" placeholder="Only needed for local gateway auth">
-    <small>Use this with the local gateway URL if the cloud API key can list sites but cannot fetch connected clients.</small>
+    <small>Use a local UniFi admin account that can sign in to the gateway and view Network clients.</small>
     <label>Local UniFi Password</label>
     <input name="unifi_password" type="password" placeholder="Leave blank to keep saved local UniFi password">
     <small>The local UniFi password is encrypted in NetSpecter's local config and used only for gateway login.</small>

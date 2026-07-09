@@ -83,7 +83,7 @@ COLLECTOR_LOCK_PATH = DATA_DIR / "collector.lock"
 SURICATA_FAST_LOG = Path("/var/log/suricata/fast.log")
 IDS_EMAIL_STATE_PATH = DATA_DIR / "ids_email_state.json"
 ENCRYPTED_PREFIX = "enc:"
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_api_key", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
 collector_lock_handle = None
 
 
@@ -121,7 +121,6 @@ DEFAULT_CONFIG = {
     "unifi_enabled": False,
     "unifi_connector_url": "",
     "unifi_site_id": "",
-    "unifi_api_key": "",
     "unifi_username": "",
     "unifi_password": "",
     "unifi_skip_tls_verify": False,
@@ -399,8 +398,6 @@ def unifi_connector_bases(config):
     base = str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     if not base:
         return []
-    if "api.ui.com" in base:
-        return ["https://api.ui.com"]
     if "/proxy/network/integration" not in base and "/network/integration" in base:
         base = base.replace("/network/integration", "/proxy/network/integration", 1)
     return [base]
@@ -423,11 +420,6 @@ def unifi_origin(base):
 def unifi_auth_mode(config, base):
     username = str(config.get("unifi_username", "") or "").strip()
     password = str(config.get("unifi_password", "") or "").strip()
-    api_key = str(config.get("unifi_api_key", "") or "").strip()
-    if "api.ui.com" not in str(base or "") and username and password:
-        return "local_session"
-    if api_key:
-        return "api_key"
     if username and password:
         return "local_session"
     return "none"
@@ -437,9 +429,6 @@ def unifi_request(config, base, url, params=None):
     headers = {"Accept": "application/json"}
     verify = unifi_verify_tls(config)
     mode = unifi_auth_mode(config, base)
-    if mode == "api_key":
-        headers["X-API-Key"] = str(config.get("unifi_api_key", "") or "").strip()
-        return requests.get(url, params=params, headers=headers, timeout=12, verify=verify)
     if mode == "local_session":
         origin = unifi_origin(base)
         if not origin:
@@ -459,14 +448,6 @@ def unifi_request(config, base, url, params=None):
             return login
         return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
     raise RuntimeError("UniFi credentials are not configured.")
-
-
-def unifi_cloud_client_hint(base, status_code):
-    if "api.ui.com" not in str(base or ""):
-        return ""
-    if int(status_code or 0) == 404:
-        return " UniFi cloud site lookup works, but connected-client discovery needs the local gateway URL, for example https://192.168.99.1/proxy/network/integration."
-    return ""
 
 
 def refresh_unifi_clients(config):
@@ -500,7 +481,7 @@ def refresh_unifi_clients(config):
                     params={"offset": offset, "limit": 100},
                 )
                 if response.status_code != 200:
-                    failure = f"HTTP {response.status_code}" + unifi_cloud_client_hint(base, response.status_code)
+                    failure = f"HTTP {response.status_code}"
                     continue
                 try:
                     payload = response.json()
