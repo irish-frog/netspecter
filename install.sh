@@ -49,7 +49,19 @@ if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok in
   curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
 fi
 apt remove -y speedtest-cli >/dev/null 2>&1 || true
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data snmp speedtest suricata
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data snmp speedtest suricata-update
+
+if apt-cache policy suricata 2>/dev/null | grep -q 'Candidate:' && ! apt-cache policy suricata 2>/dev/null | grep -q 'Candidate: (none)'; then
+  apt install -y suricata
+  systemctl enable --now suricata || true
+  mkdir -p /var/log/suricata
+  chown -R suricata:suricata /var/log/suricata 2>/dev/null || true
+  if [ ! -f /etc/suricata/suricata.yaml ]; then
+    echo "Suricata config was not found after install; check the package install output." >&2
+  fi
+else
+  echo "Suricata package is not available from this apt source set; installing suricata-update only."
+fi
 
 echo "[4/10] Creating folders..."
 mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$DATA_DIR"
@@ -111,19 +123,11 @@ systemctl restart netspecter-watchdog.timer
 systemctl restart netspecter-speedtest.timer
 systemctl enable --now vnstat || true
 systemctl enable AdGuardHome || true
-systemctl enable --now suricata || true
 
-mkdir -p /var/log/suricata
-chown -R suricata:suricata /var/log/suricata 2>/dev/null || true
-
-if [ ! -f /etc/suricata/suricata.yaml ]; then
-  echo "Suricata config was not found after install; check the package install output." >&2
-fi
-
-echo "[10/10] IDS install complete."
+echo "[10/10] IDS setup complete."
 
 echo ""
 echo "=== NetSpecter installed ==="
 echo "Open: http://SERVER-IP:5050"
 echo "AdGuard template: $CONFIG_DIR/adguard/AdGuardHome.yaml.generated"
-echo "Check: systemctl status netspecter-web netspecter-collector suricata"
+echo "Check: systemctl status netspecter-web netspecter-collector"

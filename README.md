@@ -22,7 +22,7 @@ It combines:
 * Historical traffic views up to 90 days when retention is configured
 * Bridge-mode kernel traffic accounting
 * Speed test history with optional scheduled tests
-* IDS alert review from Suricata logs, with exclusions, bans, and SMTP alerting
+* IDS alert review from Suricata logs when the engine is available, with exclusions, bans, and SMTP alerting
 * Optional SNMP polling and MQTT subscriptions for device telemetry
 * Login-protected dashboard
 * CSV exports, service health checks, and one-click collector restart when stale
@@ -229,7 +229,7 @@ The installer:
 
 * Updates Debian and installs initial setup tools
 * Installs AdGuard Home and continues while its browser setup remains available
-* Installs Suricata for IDS alert logging
+* Installs `suricata-update` for IDS rule management and installs Suricata when the package is available
 * Installs bridge, packet capture, nftables, SNMP, speed test, and Python runtime dependencies
 * Installs NetSpecter to `/opt/netspecter`
 * Creates config in `/etc/netspecter`
