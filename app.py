@@ -5297,12 +5297,42 @@ def unifi_site_endpoint(base):
     return f"{base}/v1/sites"
 
 
+def unifi_legacy_base(base):
+    origin = unifi_origin(base)
+    if not origin:
+        return ""
+    return f"{origin}/proxy/network"
+
+
+def unifi_legacy_site_endpoint(base):
+    legacy_base = unifi_legacy_base(base)
+    return f"{legacy_base}/api/self/sites" if legacy_base else ""
+
+
 def unifi_client_endpoint(config, base=None):
     base = base or str(config.get("unifi_connector_url", "") or "").strip().rstrip("/")
     site_id = quote(str(config.get("unifi_site_id", "") or "").strip(), safe="")
     if not base or not site_id:
         return ""
     return f"{base}/v1/sites/{site_id}/clients?offset=0&limit=25"
+
+
+def unifi_site_name(site):
+    if not isinstance(site, dict):
+        return ""
+    for key in ("name", "site", "site_name"):
+        value = str(site.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def unifi_legacy_client_endpoint(site_name, base):
+    legacy_base = unifi_legacy_base(base)
+    site_name = quote(str(site_name or "").strip(), safe="")
+    if not legacy_base or not site_name:
+        return ""
+    return f"{legacy_base}/api/s/{site_name}/stat/sta"
 
 
 def unifi_verify_tls(config):
@@ -5442,11 +5472,25 @@ def unifi_json_response(result):
 def unifi_site_id(site):
     if not isinstance(site, dict):
         return ""
-    for key in ("id", "siteId", "site_id", "networkId", "network_id"):
+    for key in ("id", "siteId", "site_id", "networkId", "network_id", "_id"):
         value = str(site.get(key, "") or "").strip()
         if value:
             return value
     return ""
+
+
+def unifi_site_matches(site, selected):
+    selected = str(selected or "").strip().lower()
+    if not selected:
+        return False
+    values = [
+        unifi_site_id(site),
+        unifi_site_name(site),
+        str(site.get("desc", "") or "").strip(),
+        str(site.get("description", "") or "").strip(),
+        str(site.get("displayName", "") or "").strip(),
+    ]
+    return any(str(value).strip().lower() == selected for value in values if str(value).strip())
 
 
 def unifi_site_label(site, index):
@@ -5467,19 +5511,28 @@ def find_unifi_site(config):
     try:
         failure = ""
         for base in bases:
+            sites = []
             result = unifi_request(config, base, unifi_site_endpoint(base), params={"offset": 0, "limit": 100})
-            if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}. Check the gateway URL, username, password, and selected site permissions."
-                continue
-            payload, response_error = unifi_json_response(result)
-            if response_error:
-                failure = response_error
-                continue
-            sites = payload.get("data", []) if isinstance(payload, dict) else []
+            if result.status_code == 200:
+                payload, response_error = unifi_json_response(result)
+                if response_error:
+                    failure = response_error
+                    continue
+                sites = payload.get("data", []) if isinstance(payload, dict) else []
+            else:
+                legacy_result = unifi_request(config, base, unifi_legacy_site_endpoint(base))
+                if legacy_result.status_code != 200:
+                    failure = f"UniFi API returned HTTP {legacy_result.status_code}. Check the gateway URL, username, password, and selected site permissions."
+                    continue
+                payload, response_error = unifi_json_response(legacy_result)
+                if response_error:
+                    failure = response_error
+                    continue
+                sites = payload.get("data", []) if isinstance(payload, dict) else []
             if not sites:
                 return False, "UniFi connected, but it returned no Network sites."
             preferred = next(
-                (site for site in sites if str(site.get("name", "")).strip().lower() == "default"),
+                (site for site in sites if unifi_site_name(site).lower() == "default"),
                 sites[0] if len(sites) == 1 else None,
             )
             if not preferred or not unifi_site_id(preferred):
@@ -5507,8 +5560,31 @@ def check_unifi_connection(config):
         for base in bases:
             result = unifi_request(config, base, unifi_client_endpoint(config, base))
             if result.status_code != 200:
-                failure = f"UniFi API returned HTTP {result.status_code}."
-                continue
+                legacy_sites = unifi_request(config, base, unifi_legacy_site_endpoint(base))
+                if legacy_sites.status_code != 200:
+                    failure = f"UniFi API returned HTTP {result.status_code}."
+                    continue
+                payload, response_error = unifi_json_response(legacy_sites)
+                if response_error:
+                    failure = response_error
+                    continue
+                sites = payload.get("data", []) if isinstance(payload, dict) else []
+                selected_site = next((site for site in sites if unifi_site_matches(site, config.get("unifi_site_id"))), None)
+                if not selected_site:
+                    failure = "UniFi connected, but could not match the selected site for the legacy Network API."
+                    continue
+                legacy_result = unifi_request(config, base, unifi_legacy_client_endpoint(unifi_site_name(selected_site), base))
+                if legacy_result.status_code != 200:
+                    failure = f"UniFi API returned HTTP {legacy_result.status_code}."
+                    continue
+                payload, response_error = unifi_json_response(legacy_result)
+                if response_error:
+                    failure = response_error
+                    continue
+                clients = payload.get("data", []) if isinstance(payload, dict) else []
+                named = sum(1 for client in clients if str(client.get("name") or client.get("hostname") or "").strip())
+                checked = len(clients)
+                return True, f"Connected. UniFi legacy API reports {checked} connected client(s); {named} have a UniFi name."
             payload, response_error = unifi_json_response(result)
             if response_error:
                 failure = response_error

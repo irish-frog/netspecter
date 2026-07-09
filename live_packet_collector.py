@@ -406,6 +406,59 @@ def unifi_connector_bases(config):
     return [base]
 
 
+def unifi_legacy_base(base):
+    origin = unifi_origin(base)
+    if not origin:
+        return ""
+    return f"{origin}/proxy/network"
+
+
+def unifi_legacy_site_endpoint(base):
+    legacy_base = unifi_legacy_base(base)
+    return f"{legacy_base}/api/self/sites" if legacy_base else ""
+
+
+def unifi_site_name(site):
+    if not isinstance(site, dict):
+        return ""
+    for key in ("name", "site", "site_name"):
+        value = str(site.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def unifi_site_id(site):
+    if not isinstance(site, dict):
+        return ""
+    for key in ("id", "siteId", "site_id", "networkId", "network_id", "_id"):
+        value = str(site.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def unifi_site_matches(site, selected):
+    selected = str(selected or "").strip().lower()
+    if not selected:
+        return False
+    values = [
+        unifi_site_id(site),
+        unifi_site_name(site),
+        str(site.get("desc", "") or "").strip(),
+        str(site.get("description", "") or "").strip(),
+    ]
+    return any(str(value).strip().lower() == selected for value in values if str(value).strip())
+
+
+def unifi_legacy_client_endpoint(site_name, base):
+    legacy_base = unifi_legacy_base(base)
+    site_name = quote(str(site_name or "").strip(), safe="")
+    if not legacy_base or not site_name:
+        return ""
+    return f"{legacy_base}/api/s/{site_name}/stat/sta"
+
+
 def unifi_verify_tls(config):
     verify = not bool(config.get("unifi_skip_tls_verify"))
     if not verify:
@@ -559,8 +612,28 @@ def refresh_unifi_clients(config):
                     params={"offset": offset, "limit": 100},
                 )
                 if response.status_code != 200:
-                    failure = f"HTTP {response.status_code}"
-                    continue
+                    legacy_sites = unifi_request(config, base, unifi_legacy_site_endpoint(base))
+                    if legacy_sites.status_code != 200:
+                        failure = f"HTTP {response.status_code}"
+                        continue
+                    try:
+                        sites_payload = legacy_sites.json()
+                    except ValueError:
+                        failure = "legacy site response was not JSON"
+                        continue
+                    sites = sites_payload.get("data", []) if isinstance(sites_payload, dict) else []
+                    selected_site = next((site for site in sites if unifi_site_matches(site, config.get("unifi_site_id"))), None)
+                    if not selected_site:
+                        failure = "legacy site match failed"
+                        continue
+                    response = unifi_request(
+                        config,
+                        base,
+                        unifi_legacy_client_endpoint(unifi_site_name(selected_site), base),
+                    )
+                    if response.status_code != 200:
+                        failure = f"HTTP {response.status_code}"
+                        continue
                 try:
                     payload = response.json()
                     working_base = base
@@ -578,10 +651,12 @@ def refresh_unifi_clients(config):
                     continue
                 ip = ip_identifier(client.get("ipAddress"))
                 if not ip:
+                    ip = ip_identifier(client.get("ip"))
+                if not ip:
                     continue
-                name = str(client.get("name") or ip).strip()
+                name = str(client.get("name") or client.get("hostname") or ip).strip()
                 has_unifi_name = name != ip
-                mac = str(client.get("macAddress") or "").strip().upper()
+                mac = str(client.get("macAddress") or client.get("mac") or "").strip().upper()
                 vendor = vendor_from_mac(mac)
                 dtype = classify_device(vendor)
                 connected = parse_adguard_time(client.get("connectedAt")) if client.get("connectedAt") else now
