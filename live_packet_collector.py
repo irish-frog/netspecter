@@ -436,6 +436,16 @@ def unifi_session_key(config, base):
     )
 
 
+def unifi_token_headers(token):
+    token = str(token or "").strip()
+    if not token:
+        return {}
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Auth-Token": token,
+    }
+
+
 def unifi_cached_session(config, base, headers, verify):
     key = unifi_session_key(config, base)
     now = time.monotonic()
@@ -460,9 +470,15 @@ def unifi_cached_session(config, base, headers, verify):
         timeout=12,
         verify=verify,
     )
+    login_payload = None
+    try:
+        login_payload = login.json()
+    except ValueError:
+        login_payload = None
     if login.status_code == 429:
         unifi_session_cache[key] = {
             "session": session,
+            "token": "",
             "expires_at": 0,
             "blocked_until": now + UNIFI_RATE_LIMIT_COOLDOWN_SECONDS,
         }
@@ -470,9 +486,13 @@ def unifi_cached_session(config, base, headers, verify):
     if login.status_code not in (200, 201):
         unifi_session_cache.pop(key, None)
         return None, login
+    device_token = ""
+    if isinstance(login_payload, dict):
+        device_token = str(login_payload.get("deviceToken", "") or "").strip()
 
     unifi_session_cache[key] = {
         "session": session,
+        "token": device_token,
         "expires_at": now + UNIFI_SESSION_TTL_SECONDS,
         "blocked_until": 0,
     }
@@ -487,13 +507,19 @@ def unifi_request(config, base, url, params=None):
         session, login = unifi_cached_session(config, base, headers, verify)
         if login is not None:
             return login
-        result = session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+        cached = unifi_session_cache.get(unifi_session_key(config, base), {})
+        request_headers = dict(headers)
+        request_headers.update(unifi_token_headers(cached.get("token")))
+        result = session.get(url, params=params, headers=request_headers, timeout=12, verify=verify)
         if result.status_code == 401:
             unifi_session_cache.pop(unifi_session_key(config, base), None)
             session, login = unifi_cached_session(config, base, headers, verify)
             if login is not None:
                 return login
-            return session.get(url, params=params, headers=headers, timeout=12, verify=verify)
+            cached = unifi_session_cache.get(unifi_session_key(config, base), {})
+            request_headers = dict(headers)
+            request_headers.update(unifi_token_headers(cached.get("token")))
+            return session.get(url, params=params, headers=request_headers, timeout=12, verify=verify)
         if result.status_code == 429:
             cached = unifi_session_cache.get(unifi_session_key(config, base))
             if cached:
