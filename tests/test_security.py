@@ -272,7 +272,7 @@ class WebSecurityTests(unittest.TestCase):
     def test_stylesheet_url_changes_when_sidebar_watermark_css_changes(self):
         source = (SOURCE_DIR / "app.py").read_text()
         css = (SOURCE_DIR / "static" / "theme.css").read_text()
-        self.assertIn("/static/theme.css?v=20260710a", source)
+        self.assertIn("/static/theme.css?v=20260710b", source)
         self.assertIn('<div class="designer-credit">Designed by Gavin Reniers</div>\n  <img src="/static/netspecter-logo-sidebar.png" class="brand-logo">', source)
         self.assertIn("color: #2B4470;", css)
         self.assertNotIn("position: absolute;\n  left: 16px;\n  right: 16px;\n  bottom: 14px;\n  color: rgba(154, 167, 187, .55);", css)

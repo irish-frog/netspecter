@@ -1779,6 +1779,7 @@ def shell(title, body, active="Dashboard"):
     nav_groups = [
         (
             "Overview",
+            False,
             [
                 ("Dashboard", "/", "fa-chart-line"),
                 ("Map", "/map", "fa-diagram-project"),
@@ -1786,6 +1787,7 @@ def shell(title, body, active="Dashboard"):
         ),
         (
             "Network",
+            False,
             [
                 ("Devices", "/devices", "fa-desktop"),
                 ("Traffic", "/traffic", "fa-arrow-trend-up"),
@@ -1795,6 +1797,7 @@ def shell(title, body, active="Dashboard"):
         ),
         (
             "Security",
+            True,
             [
                 ("Blocked", "/blocked", "fa-ban"),
                 ("Services", "/blocked-services", "fa-filter-circle-xmark"),
@@ -1804,6 +1807,7 @@ def shell(title, body, active="Dashboard"):
         ),
         (
             "Services",
+            True,
             [
                 ("Integrations", "/integrations", "fa-plug"),
                 ("Telemetry", "/telemetry", "fa-satellite-dish"),
@@ -1812,26 +1816,41 @@ def shell(title, body, active="Dashboard"):
         ),
         (
             "System",
+            True,
             [
                 ("Health", "/health", "fa-heart-pulse"),
                 ("Exports", "/exports", "fa-file-export"),
                 ("Settings", "/settings", "fa-gear"),
                 ("System", "/system", "fa-server"),
-                ("Logout", "/logout", "fa-right-from-bracket"),
             ],
         ),
     ]
 
     nav = ""
+    logout_nav = '<a class="nav-logout" href="/logout"><i class="fa-solid fa-right-from-bracket"></i>Logout</a>'
     app_shell_pages = {"Dashboard", "Devices", "Traffic"}
 
-    for group_label, items in nav_groups:
-        nav += f'<div class="nav-group"><div class="nav-group-label">{group_label}</div>'
+    for group_label, collapsible, items in nav_groups:
+        group_active = any(label == active for label, _, _ in items)
+        if collapsible:
+            open_attr = " open" if group_active else ""
+            active_cls = " active" if group_active else ""
+            nav += (
+                f'<details class="nav-group nav-dropdown{active_cls}"{open_attr}>'
+                f'<summary><span>{group_label}</span><i class="fa-solid fa-chevron-down"></i></summary>'
+                '<div class="nav-dropdown-items">'
+            )
+        else:
+            nav += f'<div class="nav-group"><div class="nav-group-label">{group_label}</div>'
         for label, url, icon in items:
             cls = "active" if label == active else ""
             shell_attr = ' data-app-shell="1"' if label in app_shell_pages else ""
             nav += f'<a class="{cls}" href="{url}"{shell_attr}><i class="fa-solid {icon}"></i>{label}</a>'
-        nav += "</div>"
+        if collapsible:
+            nav += "</div></details>"
+        else:
+            nav += "</div>"
+    nav += logout_nav
 
     # ---------------------------------------------------
     # Standard page shell
@@ -1845,7 +1864,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260710a">
+<link rel="stylesheet" href="/static/theme.css?v=20260710b">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
