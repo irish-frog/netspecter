@@ -8,7 +8,6 @@ CONFIG_DIR="/etc/netspecter"
 DATA_DIR="/var/lib/netspecter"
 SERVICE_DIR="/etc/systemd/system"
 INSTALL_ADGUARD="${INSTALL_ADGUARD:-1}"
-INSTALL_KUMA="${INSTALL_KUMA:-1}"
 ADGUARD_JUST_INSTALLED=0
 
 if [ "${EUID}" -ne 0 ]; then
@@ -18,10 +17,6 @@ fi
 
 port_3000_in_use() {
   ss -H -ltn 'sport = :3000' 2>/dev/null | grep -q LISTEN
-}
-
-port_3001_in_use() {
-  ss -H -ltn 'sport = :3001' 2>/dev/null | grep -q LISTEN
 }
 
 echo "[1/9] Refreshing package metadata and installing setup tools..."
@@ -71,31 +66,6 @@ if apt-cache policy suricata 2>/dev/null | grep -q 'bookworm-backports'; then
   fi
 else
   echo "Suricata package is not available from bookworm-backports; installing suricata-update only."
-fi
-
-echo "[3b/10] Installing Uptime Kuma if requested..."
-if [ "$INSTALL_KUMA" = "1" ]; then
-  if ! command -v docker >/dev/null 2>&1; then
-    apt install -y docker.io
-  fi
-  systemctl enable --now docker
-  if docker ps -a --format '{{.Names}}' | grep -qx 'uptime-kuma'; then
-    docker start uptime-kuma >/dev/null 2>&1 || true
-  else
-    if port_3001_in_use; then
-      echo "Port 3001 is already in use. Skipping Uptime Kuma container creation." >&2
-      ss -ltnp 'sport = :3001' || true
-    else
-      docker run -d \
-        --name uptime-kuma \
-        --restart=always \
-        -p 3001:3001 \
-        -v uptime-kuma:/app/data \
-        louislam/uptime-kuma:1
-    fi
-  fi
-else
-  echo "Uptime Kuma install skipped by INSTALL_KUMA=0."
 fi
 
 echo "[4/10] Creating folders..."
@@ -164,7 +134,5 @@ echo "[10/10] IDS setup complete."
 echo ""
 echo "=== NetSpecter installed ==="
 echo "Open: http://SERVER-IP:5050"
-echo "Uptime Kuma: http://SERVER-IP:3001"
 echo "AdGuard template: $CONFIG_DIR/adguard/AdGuardHome.yaml.generated"
 echo "Check: systemctl status netspecter-web netspecter-collector"
-echo "Check Kuma: docker ps --filter name=uptime-kuma"

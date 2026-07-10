@@ -4,7 +4,6 @@
   "adguard_url": "http://127.0.0.1",
   "adguard_user": "admin",
   "adguard_pass": "",
-  "kuma_url": "http://127.0.0.1:3001",
   "lan_prefix": "192.168.1.",
   "collect_interval_seconds": 2,
   "traffic_retention_days": 90,

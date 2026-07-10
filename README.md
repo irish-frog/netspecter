@@ -229,7 +229,6 @@ The installer:
 
 * Updates Debian and installs initial setup tools
 * Installs AdGuard Home and continues while its browser setup remains available
-* Installs Uptime Kuma on port `3001` using Docker, unless `INSTALL_KUMA=0` is set
 * Installs `suricata-update` for IDS rule management and installs Suricata from Debian bookworm-backports when available
 * Installs bridge, packet capture, nftables, SNMP, speed test, and Python runtime dependencies
 * Installs NetSpecter to `/opt/netspecter`
@@ -254,14 +253,6 @@ Open NetSpecter at:
 ```text
 http://SERVER-IP:5050
 ```
-
-Open Uptime Kuma at:
-
-```text
-http://SERVER-IP:3001
-```
-
-The NetSpecter dashboard shows Uptime Kuma status and includes a launch link. In Kuma, create a monitor for `http://127.0.0.1:5050` to watch the local NetSpecter web service.
 
 To use local names, add AdGuard DNS rewrites and keep the service port in the URL. For example, `netspecter -> SERVER-IP` opens as `http://netspecter:5050`.
 

@@ -82,7 +82,6 @@ DEFAULT_CONFIG = {
     "adguard_url": "http://127.0.0.1",
     "adguard_user": "admin",
     "adguard_pass": "",
-    "kuma_url": "http://127.0.0.1:3001",
     "packet_iface": "br0",
     "gateway_ip": "",
     "ignore_ips": [],
@@ -1735,20 +1734,6 @@ def ag_post(endpoint, payload=None):
         return False, {"error": str(e)}
 
 
-def kuma_status(config=None):
-    c = config or cfg()
-    url = str(c.get("kuma_url", "") or "").strip().rstrip("/")
-    if not url:
-        return False, "Not configured", ""
-    try:
-        r = requests.get(url, timeout=4)
-        if 200 <= r.status_code < 500:
-            return True, f"HTTP {r.status_code}", url
-        return False, f"HTTP {r.status_code}", url
-    except Exception as e:
-        return False, str(e), url
-
-
 def shell(title, body, active="Dashboard"):
     """
     Main HTML wrapper used by all NetSpecter pages.
@@ -2139,7 +2124,6 @@ refreshUpdateStatusBadge();
 def topbar(title="Dashboard"):
     c = cfg()
     adguard_url = str(c.get("adguard_url", "") or "#")
-    kuma_url = str(c.get("kuma_url", "") or "#")
     update_badge = '<a id="updateStatusBadge" href="/system#updates"><span>Checking updates...</span></a>' if title == "Dashboard" else '<a href="/system#updates"><span>Updates</span></a>'
 
     return f"""
@@ -2153,7 +2137,6 @@ def topbar(title="Dashboard"):
     <span>Public IP: {public_ip(refresh=False)}</span>
     {update_badge}
     <a href="{h(adguard_url)}" target="_blank"><span>AdGuard</span></a>
-    <a href="{h(kuma_url)}" target="_blank"><span>Uptime Kuma</span></a>
     <a href="{h(adguard_url)}/#blocked_services" target="_blank"><span>Blocked Services</span></a>
     <span>LAN: {c.get('lan_prefix')}0/24</span>
   </div>
@@ -2308,9 +2291,6 @@ def dashboard_app_rows():
 
 
 def dashboard_health_cards(health):
-    kuma_ok, _kuma_detail, kuma_url = kuma_status()
-    kuma_text = "ONLINE" if kuma_ok else "CHECK"
-    kuma_class = "green" if kuma_ok else "yellow"
     if health["collector_state"] == "OK":
         collector_card = f"""<div class="dash-card slim"><i class="fa-solid fa-plug-circle-check"></i><div><span>Collector</span><b class="green">{health['collector_state']}</b></div></div>"""
     elif health["collector_state"] in ("Updating", "Starting"):
@@ -2330,7 +2310,6 @@ def dashboard_health_cards(health):
 <div class="dash-card slim"><i class="fa-solid fa-hard-drive"></i><div><span>Disk / HDD</span><b class="{'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</b><small>{health['disk_free_gb']} GB free</small></div></div>
 <div class="dash-card slim"><i class="fa-solid fa-database"></i><div><span>Database</span><b class="teal">{health['db_size']} MB</b></div></div>
 {collector_card}
-<a class="dash-card slim" href="{h(kuma_url or '#')}" target="_blank"><i class="fa-solid fa-heart-pulse"></i><div><span>Uptime Kuma</span><b class="{kuma_class}">{kuma_text}</b></div></a>
 <div class="dash-card slim"><i class="fa-regular fa-clock"></i><div><span>Uptime</span><b>{health['uptime']}</b></div></div>
 """
 
@@ -5122,7 +5101,6 @@ def health_page():
     c = cfg()
     health = system_health()
     ok_adguard, _ = ag_get("/status")
-    kuma_ok, kuma_detail, kuma_url = kuma_status(c)
     bridge_ok = False
     if psutil:
         try:
@@ -5133,7 +5111,6 @@ def health_page():
     services = [
         ("Collector", health["collector_state"] == "OK", health["last_seen"]),
         ("AdGuard API", ok_adguard, c.get("adguard_url", "")),
-        ("Uptime Kuma", kuma_ok, kuma_url or kuma_detail),
         ("Bridge Interface", bridge_ok, c.get("packet_iface", "br0")),
         ("Database", DB_PATH.exists(), f"{health['db_size']} MB"),
         ("Web App", True, "Online"),
@@ -5753,7 +5730,6 @@ def settings():
         "packet_iface": "Bridge carrying monitored traffic, usually br0. Linux nftables counts forwarded bytes on this bridge.",
         "lan_prefix": "LAN prefix used to identify local devices, for example 192.168.1.",
         "adguard_url": "AdGuard Home URL used for DNS stats and controls.",
-        "kuma_url": "Uptime Kuma dashboard URL. Default installer exposes it on port 3001.",
         "collect_interval_seconds": "Seconds between measured traffic interval writes. Live speed freshness follows this value.",
         "traffic_retention_days": "Number of calendar days of measured traffic history to keep. Use 90 for the 90-day view.",
         "dns_retention_days": "Number of calendar days of imported DNS/application activity to keep. Use 90 for the 90-day view.",
@@ -5783,7 +5759,6 @@ def settings():
         "adguard_url": "AdGuard URL",
         "adguard_user": "AdGuard User",
         "adguard_pass": "AdGuard Password",
-        "kuma_url": "Uptime Kuma URL",
         "collect_interval_seconds": "Traffic Sample Interval Seconds",
         "traffic_retention_days": "Traffic Retention Days",
         "dns_retention_days": "DNS/App Retention Days",
@@ -5809,7 +5784,7 @@ def settings():
     }
     preferred_order = [
         "gateway_ip", "ignore_ips", "lan_prefix", "packet_iface",
-        "adguard_url", "adguard_user", "adguard_pass", "kuma_url", "adguard_querylog_interval_seconds",
+        "adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds",
         "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
         "fast_page_mode",
         "snmp_enabled", "snmp_targets", "snmp_version", "snmp_port", "snmp_community", "snmp_poll_seconds",
@@ -6003,7 +5978,6 @@ def system():
 
     health = system_health()
     c = cfg()
-    kuma_ok, kuma_detail, kuma_url = kuma_status(c)
     collector_notice = ""
     if request.args.get("collector") == "restarted":
         collector_notice = '<div class="setup-ok">Collector restart requested.</div>'
@@ -6052,7 +6026,6 @@ def system():
   <div class="card"><div class="label">Disk / HDD</div><span class="big {'red' if health['disk'] > 85 else 'green'}">{health['disk']}%</span><p class="sub">{health['disk_free_gb']} GB free</p></div>
   <div class="card"><div class="label">Database</div><span class="big teal">{health['db_size']} MB</span></div>
   {collector_system_card(health)}
-  <a class="card" href="{h(kuma_url or '#')}" target="_blank"><div class="label">Uptime Kuma</div><span class="big {'green' if kuma_ok else 'yellow'}">{'Online' if kuma_ok else 'Check'}</span><small>{h(kuma_detail)}</small></a>
   <div class="card"><div class="label">Uptime</div><span class="big">{health['uptime']}</span></div>
 </div>
 
