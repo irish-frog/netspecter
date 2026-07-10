@@ -1247,6 +1247,7 @@ def restart_collector():
 def source_checkout_root():
     candidates = [
         os.environ.get("NETSPECTER_SOURCE_ROOT"),
+        str(Path.home() / "netspecter-v2"),
         str(Path.home() / "netspecter"),
         str(BASE_DIR),
     ]
@@ -1271,6 +1272,17 @@ def git_command(source_root, *args, timeout=20):
     return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
 
 
+def git_upstream_ref(source_root):
+    rc, upstream, _err = git_command(source_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if rc == 0 and upstream:
+        return upstream
+    for fallback in ("origin/main", "v2/main"):
+        rc, _sha, _err = git_command(source_root, "rev-parse", "--verify", fallback)
+        if rc == 0:
+            return fallback
+    return ""
+
+
 def update_status(force=False, fetch_remote=False):
     now = time.time()
     cached = UPDATE_STATUS_CACHE.get("data")
@@ -1283,16 +1295,23 @@ def update_status(force=False, fetch_remote=False):
         UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
         return data
 
-    if fetch_remote:
-        git_command(source, "fetch", "--quiet", "origin", timeout=10)
-    _rc, current, _err = git_command(source, "rev-parse", "--short", "HEAD")
-    rc, latest, err = git_command(source, "rev-parse", "--short", "origin/main")
-    if rc != 0:
-        data = {"ok": False, "available": False, "detail": err or "Could not read origin/main."}
+    upstream = git_upstream_ref(source)
+    if not upstream:
+        data = {"ok": False, "available": False, "detail": "Git upstream not configured."}
         UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
         return data
 
-    rc, behind, _err = git_command(source, "rev-list", "--count", "HEAD..origin/main")
+    remote_name = upstream.split("/", 1)[0] if "/" in upstream else "origin"
+    if fetch_remote:
+        git_command(source, "fetch", "--quiet", remote_name, timeout=10)
+    _rc, current, _err = git_command(source, "rev-parse", "--short", "HEAD")
+    rc, latest, err = git_command(source, "rev-parse", "--short", upstream)
+    if rc != 0:
+        data = {"ok": False, "available": False, "detail": err or f"Could not read {upstream}."}
+        UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
+        return data
+
+    rc, behind, _err = git_command(source, "rev-list", "--count", f"HEAD..{upstream}")
     available = rc == 0 and str(behind or "0").isdigit() and int(behind) > 0
     data = {
         "ok": True,
@@ -1301,6 +1320,7 @@ def update_status(force=False, fetch_remote=False):
         "latest": latest,
         "behind": int(behind or 0) if str(behind or "0").isdigit() else 0,
         "source": str(source),
+        "upstream": upstream,
     }
     UPDATE_STATUS_CACHE.update({"ts": now, "data": data})
     return data
@@ -5672,6 +5692,15 @@ def check_http_service(url, label, timeout=2, brief=False):
     if not url:
         return False, f"{label} URL not configured"
     try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if host:
+            try:
+                with socket.create_connection((host, port), timeout=min(float(timeout), 0.4)):
+                    pass
+            except Exception:
+                return False, f"{label} unreachable" if brief else f"{label} is not reachable at {host}:{port}"
         res = requests.get(url, timeout=timeout, verify=False)
         if 200 <= res.status_code < 400:
             return True, f"Online at {url}"
@@ -5939,11 +5968,30 @@ def integrations():
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     c = cfg()
+    section = request.values.get("section", "network").strip().lower()
+    valid_sections = {"network", "adguard", "traffic", "telemetry", "web", "password"}
+    if section not in valid_sections:
+        section = "network"
+    section_keys = {
+        "network": ["gateway_ip", "ignore_ips", "lan_prefix", "packet_iface"],
+        "adguard": ["adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds"],
+        "traffic": ["collect_interval_seconds", "traffic_retention_days", "dns_retention_days", "fast_page_mode"],
+        "telemetry": [
+            "snmp_enabled", "snmp_targets", "snmp_version", "snmp_port", "snmp_community", "snmp_poll_seconds",
+            "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_tls", "mqtt_username", "mqtt_password",
+            "mqtt_client_id", "mqtt_subscribe_topics",
+        ],
+        "web": ["web_host", "web_port", "auth_enabled", "admin_user"],
+        "password": [],
+    }
     hidden_settings = {"app_name", "tagline", "admin_password_hash"} | INTEGRATION_SETTINGS_KEYS
     editable_keys = [key for key in c.keys() if key not in hidden_settings]
 
     if request.method == "POST":
+        post_keys = set(section_keys[section])
         for key in editable_keys:
+            if key not in post_keys:
+                continue
             if isinstance(c[key], bool):
                 c[key] = request.form.get(key) == "1"
                 continue
@@ -5964,7 +6012,7 @@ def settings():
 
         new_password = request.form.get("admin_new_password", "")
         confirm_password = request.form.get("admin_confirm_password", "")
-        if new_password:
+        if section == "password" and new_password:
             if len(new_password) >= 8 and new_password == confirm_password:
                 c["admin_password_hash"] = generate_password_hash(new_password)
 
@@ -5973,7 +6021,7 @@ def settings():
 
         save_cfg(c)
         restart_collector_service()
-        return redirect("/settings?saved=1&collector=restarted")
+        return redirect(f"/settings?section={section}&saved=1&collector=restarted")
 
     setting_help = {
         "gateway_ip": "Router/gateway IP. Leave blank to use LAN Prefix + 1. NetSpecter excludes it from device usage totals and live collector stats.",
@@ -6033,20 +6081,13 @@ def settings():
         "auth_enabled": "Login Enabled",
         "admin_user": "Admin Username",
     }
-    preferred_order = [
-        "gateway_ip", "ignore_ips", "lan_prefix", "packet_iface",
-        "adguard_url", "adguard_user", "adguard_pass", "adguard_querylog_interval_seconds",
-        "collect_interval_seconds", "traffic_retention_days", "dns_retention_days",
-        "fast_page_mode",
-        "snmp_enabled", "snmp_targets", "snmp_version", "snmp_port", "snmp_community", "snmp_poll_seconds",
-        "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_tls", "mqtt_username", "mqtt_password", "mqtt_client_id", "mqtt_subscribe_topics",
-        "web_host", "web_port",
-        "auth_enabled", "admin_user",
-    ]
+    preferred_order = section_keys[section]
     ordered_keys = [k for k in preferred_order if k in c] + [k for k in c.keys() if k not in preferred_order]
 
     fields = ""
     for key in ordered_keys:
+        if key not in preferred_order:
+            continue
         val = c[key]
         if key in ["app_name", "tagline", "admin_password_hash"] or key in INTEGRATION_SETTINGS_KEYS:
             continue
@@ -6061,21 +6102,41 @@ def settings():
         placeholder = " placeholder='Leave blank to keep existing password'" if key in SENSITIVE_CONFIG_KEYS else ""
         fields += f"<label>{h(setting_labels.get(key, key))}</label><input type='{typ}' name='{key}' value='{h(display_val)}'{placeholder}>{help_text}"
 
-    fields += """
+    password_fields = """
 <label>New Admin Password</label>
 <input type="password" name="admin_new_password" placeholder="Leave blank to keep current login password">
 <small>Use this to change the NetSpecter login password. Minimum 8 characters.</small>
 <label>Confirm New Admin Password</label>
 <input type="password" name="admin_confirm_password" placeholder="Repeat new login password">
 """
+    if section == "password":
+        fields = password_fields
+
+    section_tabs = [
+        ("network", "Network", "fa-network-wired"),
+        ("adguard", "AdGuard", "fa-shield-halved"),
+        ("traffic", "Traffic", "fa-arrow-trend-up"),
+        ("telemetry", "Telemetry", "fa-satellite-dish"),
+        ("web", "Web/Login", "fa-window-maximize"),
+        ("password", "Password", "fa-key"),
+    ]
+    settings_section_menu = ""
+    for key, label, icon in section_tabs:
+        cls = "active" if key == section else ""
+        settings_section_menu += f'<a class="{cls}" href="/settings?section={key}"><i class="fa-solid {icon}"></i>{label}</a>'
+    settings_section_menu = f'<div class="settings-menu">{settings_section_menu}</div>'
+    section_title = next(label for key, label, _ in section_tabs if key == section)
 
     body = f"""
 {topbar('Settings')}
 {settings_menu('Settings')}
+{settings_section_menu}
 <div class="panel settings">
 {setup_banner()}
+<h2>{h(section_title)} Settings</h2>
 <form method="post">
 {csrf_input()}
+<input type="hidden" name="section" value="{h(section)}">
 {fields}
 <button>Save Settings</button>
 </form>
