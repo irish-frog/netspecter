@@ -24,6 +24,7 @@ It combines:
 * Speed test history with optional scheduled tests
 * IDS alert review from Suricata logs when the engine is available, with exclusions, bans, and SMTP alerting
 * Optional SNMP polling and MQTT subscriptions for device telemetry
+* Optional companion service links for Gatus, Beszel, and Telegram alerts
 * Login-protected dashboard
 * CSV exports, service health checks, and one-click collector restart when stale
 
@@ -303,6 +304,10 @@ The local UniFi password is encrypted in NetSpecter's local config and is never 
 NetSpecter can pull telemetry from existing devices using SNMP and subscribe to an existing MQTT broker. It does not act as an SNMP server or MQTT broker.
 
 Use Settings to configure SNMP targets and MQTT topics, then open Telemetry to see the latest readings. See the [SNMP and MQTT Telemetry wiki page](wiki/SNMP-MQTT-Telemetry.md) for setup notes and troubleshooting.
+
+### Companion Services
+
+Use Integrations to add optional service links for Gatus and Beszel, plus Telegram bot credentials for alert delivery. NetSpecter shows these in the Services menu and Service Health page, but does not install or manage those services yet.
 
 ### Speed Tests
 

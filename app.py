@@ -130,16 +130,22 @@ DEFAULT_CONFIG = {
     "smtp_from": "",
     "smtp_to": "",
     "ids_email_cooldown_minutes": 30,
+    "gatus_url": "",
+    "beszel_url": "",
+    "telegram_enabled": False,
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
 }
 
-SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_password", "smtp_password", "snmp_community", "mqtt_password"}
+SENSITIVE_CONFIG_KEYS = {"adguard_pass", "unifi_password", "smtp_password", "snmp_community", "mqtt_password", "telegram_bot_token"}
 INTEGRATION_SETTINGS_KEYS = {
     "unifi_enabled", "unifi_connector_url", "unifi_site_id",
     "unifi_username", "unifi_password", "unifi_skip_tls_verify", "scheduled_speedtests_per_day",
     "ids_unknown_only", "ids_excluded_ips", "ids_banned_ips",
     "ids_email_enabled", "smtp_host", "smtp_port", "smtp_security",
     "smtp_username", "smtp_password", "smtp_from", "smtp_to",
-    "ids_email_cooldown_minutes",
+    "ids_email_cooldown_minutes", "gatus_url", "beszel_url",
+    "telegram_enabled", "telegram_bot_token", "telegram_chat_id",
 }
 ENCRYPTED_PREFIX = "enc:"
 
@@ -1810,6 +1816,9 @@ def shell(title, body, active="Dashboard"):
             True,
             [
                 ("Integrations", "/integrations", "fa-plug"),
+                ("Gatus", "/gatus", "fa-signal"),
+                ("Telegram", "/telegram", "fa-paper-plane"),
+                ("Beszel", "/beszel", "fa-gauge-simple-high"),
                 ("Telemetry", "/telemetry", "fa-satellite-dish"),
                 ("Speed Tests", "/speed-tests", "fa-gauge-high"),
             ],
@@ -1864,7 +1873,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260710b">
+<link rel="stylesheet" href="/static/theme.css?v=20260710c">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -5162,6 +5171,14 @@ def health_page():
         ("Database", DB_PATH.exists(), f"{health['db_size']} MB"),
         ("Web App", True, "Online"),
     ]
+    gatus_ok, gatus_detail = check_http_service(service_url(c, "gatus_url"), "Gatus")
+    beszel_ok, beszel_detail = check_http_service(service_url(c, "beszel_url"), "Beszel")
+    telegram_ok, telegram_detail = check_telegram_config(c)
+    services.extend([
+        ("Gatus", gatus_ok, gatus_detail),
+        ("Beszel", beszel_ok, beszel_detail),
+        ("Telegram", telegram_ok, telegram_detail),
+    ])
     cards = ""
     for name, ok, detail in services:
         if name == "Collector" and not ok:
@@ -5646,6 +5663,130 @@ def check_unifi_connection(config):
         return False, f"UniFi connection failed: {error}"
 
 
+def service_url(config, key):
+    return str(config.get(key, "") or "").strip().rstrip("/")
+
+
+def check_http_service(url, label):
+    if not url:
+        return False, f"{label} URL not configured"
+    try:
+        res = requests.get(url, timeout=5, verify=False)
+        if 200 <= res.status_code < 400:
+            return True, f"Online at {url}"
+        return False, f"HTTP {res.status_code} from {url}"
+    except Exception as error:
+        return False, f"{label} check failed: {error}"
+
+
+def check_telegram_config(config):
+    if not config.get("telegram_enabled"):
+        return False, "Telegram disabled"
+    if not str(config.get("telegram_bot_token", "") or "").strip():
+        return False, "Bot token missing"
+    if not str(config.get("telegram_chat_id", "") or "").strip():
+        return False, "Chat ID missing"
+    return True, "Configured"
+
+
+def send_telegram_message(config, text):
+    ok, detail = check_telegram_config(config)
+    if not ok:
+        return False, detail
+    token = str(config.get("telegram_bot_token", "") or "").strip()
+    chat_id = str(config.get("telegram_chat_id", "") or "").strip()
+    try:
+        res = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            return True, "Telegram test message sent."
+        return False, f"Telegram returned HTTP {res.status_code}: {res.text[:160]}"
+    except Exception as error:
+        return False, f"Telegram test failed: {error}"
+
+
+def service_card(name, url, icon, color="green"):
+    if url:
+        return f"""
+<a class="card" href="{h(url)}" target="_blank">
+  <div class="label">{h(name)}</div>
+  <span class="big {color}">Open</span>
+  <small>{h(url)}</small>
+</a>
+"""
+    return f"""
+<a class="card" href="/integrations">
+  <div class="label">{h(name)}</div>
+  <span class="big yellow">Setup</span>
+  <small>Configure in Integrations</small>
+</a>
+"""
+
+
+@app.route("/gatus")
+def gatus_page():
+    c = cfg()
+    url = service_url(c, "gatus_url")
+    ok, detail = check_http_service(url, "Gatus")
+    body = f"""
+{topbar('Gatus')}
+<div class="grid">
+  {service_card('Gatus Dashboard', url, 'fa-signal', 'green')}
+  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Set the Gatus URL</small></a>
+</div>
+"""
+    return shell("Gatus", body, "Gatus")
+
+
+@app.route("/beszel")
+def beszel_page():
+    c = cfg()
+    url = service_url(c, "beszel_url")
+    ok, detail = check_http_service(url, "Beszel")
+    body = f"""
+{topbar('Beszel')}
+<div class="grid">
+  {service_card('Beszel Dashboard', url, 'fa-gauge-simple-high', 'teal')}
+  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Set the Beszel URL</small></a>
+</div>
+"""
+    return shell("Beszel", body, "Beszel")
+
+
+@app.route("/telegram", methods=["GET", "POST"])
+def telegram_page():
+    c = cfg()
+    notice = ""
+    notice_class = "setup-ok"
+    if request.method == "POST":
+        ok, notice = send_telegram_message(c, "NetSpecter Telegram integration test.")
+        notice_class = "setup-ok" if ok else "setup-warning"
+    ok, detail = check_telegram_config(c)
+    notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
+    body = f"""
+{topbar('Telegram')}
+{notice_html}
+<div class="grid">
+  <div class="card"><div class="label">Bot</div><span class="big {'green' if ok else 'yellow'}">{'Ready' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Bot token and chat ID</small></a>
+  <form class="card" method="post">
+    {csrf_input()}
+    <button type="submit" style="background:none; border:0; padding:0; margin:0; width:100%; min-height:82px; text-align:left; color:inherit; cursor:pointer;">
+      <div class="label">Test Alert</div>
+      <span class="big green">Send</span>
+      <small>Send a Telegram test message</small>
+    </button>
+  </form>
+</div>
+"""
+    return shell("Telegram", body, "Telegram")
+
+
 @app.route("/integrations", methods=["GET", "POST"])
 def integrations():
     c = cfg()
@@ -5666,6 +5807,15 @@ def integrations():
             c["unifi_password"] = password
         if request.form.get("clear_unifi_password") == "1":
             c["unifi_password"] = ""
+        c["gatus_url"] = request.form.get("gatus_url", "").strip()
+        c["beszel_url"] = request.form.get("beszel_url", "").strip()
+        c["telegram_enabled"] = request.form.get("telegram_enabled") == "1"
+        c["telegram_chat_id"] = request.form.get("telegram_chat_id", "").strip()
+        telegram_token = request.form.get("telegram_bot_token", "")
+        if telegram_token:
+            c["telegram_bot_token"] = telegram_token
+        if request.form.get("clear_telegram_bot_token") == "1":
+            c["telegram_bot_token"] = ""
         try:
             c["scheduled_speedtests_per_day"] = min(5, max(0, int(request.form.get("scheduled_speedtests_per_day", "0"))))
         except ValueError:
@@ -5682,11 +5832,15 @@ def integrations():
         elif action == "test_unifi":
             ok, notice = check_unifi_connection(c)
             notice_class = "setup-ok" if ok else "setup-warning"
+        elif action == "test_telegram":
+            ok, notice = send_telegram_message(c, "NetSpecter Telegram integration test.")
+            notice_class = "setup-ok" if ok else "setup-warning"
         else:
             notice = "Integration options saved. The collector has restarted."
 
     enabled_checked = " checked" if c.get("unifi_enabled") else ""
     skip_tls_checked = " checked" if c.get("unifi_skip_tls_verify") else ""
+    telegram_checked = " checked" if c.get("telegram_enabled") else ""
     schedule_options = "".join(
         f'<option value="{number}"{" selected" if int(c.get("scheduled_speedtests_per_day", 0) or 0) == number else ""}>{number if number else "Off"}</option>'
         for number in range(0, 6)
@@ -5723,9 +5877,29 @@ def integrations():
     <label>Automatic Speed Tests Per Day</label>
     <select name="scheduled_speedtests_per_day">{schedule_options}</select>
     <small>Select up to 5 tests per day, spread across daytime and evening hours.</small>
+
+    <h2 style="margin-top:28px;">Service Dashboards (Optional)</h2>
+    <p>Link NetSpecter to companion service dashboards without letting them crowd the main navigation.</p>
+    <label>Gatus URL</label>
+    <input name="gatus_url" value="{h(c.get('gatus_url', ''))}" placeholder="http://netspecter:8080">
+    <small>Used by the Gatus page and Health cards. Leave blank until Gatus is installed.</small>
+    <label>Beszel URL</label>
+    <input name="beszel_url" value="{h(c.get('beszel_url', ''))}" placeholder="http://netspecter:8090">
+    <small>Used by the Beszel page and Health cards. Leave blank until Beszel is installed.</small>
+
+    <h2 style="margin-top:28px;">Telegram Alerts (Optional)</h2>
+    <p>Telegram can be used for test alerts now and system notifications as more alert workflows are added.</p>
+    <label><input type="checkbox" name="telegram_enabled" value="1" style="width:auto"{telegram_checked}> Enable Telegram Alerts</label>
+    <label>Telegram Bot Token</label>
+    <input name="telegram_bot_token" type="password" placeholder="Leave blank to keep saved token">
+    <small>The bot token is encrypted in the local NetSpecter config.</small>
+    <label>Telegram Chat ID</label>
+    <input name="telegram_chat_id" value="{h(c.get('telegram_chat_id', ''))}" placeholder="123456789">
+    <label><input type="checkbox" name="clear_telegram_bot_token" value="1" style="width:auto"> Clear saved Telegram bot token</label>
     <button type="submit" name="action" value="save">Save Options</button>
     <button type="submit" name="action" value="find_unifi_site">Find Site Automatically</button>
     <button type="submit" name="action" value="test_unifi">Save and Test UniFi</button>
+    <button type="submit" name="action" value="test_telegram">Save and Test Telegram</button>
   </form>
 </div>
 """
