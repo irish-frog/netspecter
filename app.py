@@ -1873,7 +1873,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260710c">
+<link rel="stylesheet" href="/static/theme.css?v=20260710d">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -5208,6 +5208,7 @@ def health_page():
         notice = '<div class="setup-warning">Collector restart failed. Check System logs.</div>'
     body = f"""
 {topbar('Service Health')}
+{settings_menu('Health')}
 {notice}
 <div class="grid">{cards}</div>
 """
@@ -5708,6 +5709,20 @@ def send_telegram_message(config, text):
         return False, f"Telegram test failed: {error}"
 
 
+def settings_menu(active):
+    items = [
+        ("Settings", "/settings", "fa-gear"),
+        ("Integrations", "/integrations", "fa-plug"),
+        ("Health", "/health", "fa-heart-pulse"),
+        ("System", "/system", "fa-server"),
+    ]
+    links = ""
+    for label, url, icon in items:
+        cls = "active" if label == active else ""
+        links += f'<a class="{cls}" href="{url}"><i class="fa-solid {icon}"></i>{label}</a>'
+    return f'<div class="settings-menu">{links}</div>'
+
+
 def service_card(name, url, icon, color="green"):
     if url:
         return f"""
@@ -5848,6 +5863,7 @@ def integrations():
     notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
     body = f"""
 {topbar('Integrations')}
+{settings_menu('Integrations')}
 {notice_html}
 <div class="panel settings">
   <h2>UniFi Device Discovery (Optional)</h2>
@@ -6041,6 +6057,7 @@ def settings():
 
     body = f"""
 {topbar('Settings')}
+{settings_menu('Settings')}
 <div class="panel settings">
 {setup_banner()}
 <form method="post">
@@ -6253,6 +6270,7 @@ def system():
 
     body = f"""
 {topbar('System')}
+{settings_menu('System')}
 
 {collector_notice}
 <div class="grid">

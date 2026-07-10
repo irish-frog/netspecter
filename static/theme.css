@@ -821,6 +821,40 @@ a {
   margin-bottom: 4px;
 }
 
+.settings-menu {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  margin: -4px 0 16px;
+  padding-bottom: 4px;
+}
+
+.settings-menu a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  color: #a8b3c5;
+  background: #071126;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settings-menu a.active,
+.settings-menu a:hover {
+  color: #ffffff;
+  border-color: rgba(147, 197, 253, 0.55);
+  background: rgba(10, 20, 38, 0.92);
+}
+
+.settings-menu i {
+  color: #c0c8d7;
+}
+
 .login-body {
   min-height: 100vh;
   display: grid;
