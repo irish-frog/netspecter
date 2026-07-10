@@ -1815,7 +1815,7 @@ def shell(title, body, active="Dashboard"):
             "Services",
             True,
             [
-                ("Integrations", "/integrations", "fa-plug"),
+                ("UniFi", "/unifi", "fa-wifi"),
                 ("Gatus", "/gatus", "fa-signal"),
                 ("Telegram", "/telegram", "fa-paper-plane"),
                 ("Beszel", "/beszel", "fa-gauge-simple-high"),
@@ -5712,7 +5712,6 @@ def send_telegram_message(config, text):
 def settings_menu(active):
     items = [
         ("Settings", "/settings", "fa-gear"),
-        ("Integrations", "/integrations", "fa-plug"),
         ("Health", "/health", "fa-heart-pulse"),
         ("System", "/system", "fa-server"),
     ]
@@ -5733,77 +5732,24 @@ def service_card(name, url, icon, color="green"):
 </a>
 """
     return f"""
-<a class="card" href="/integrations">
+<div class="card">
   <div class="label">{h(name)}</div>
   <span class="big yellow">Setup</span>
-  <small>Configure in Integrations</small>
-</a>
-"""
-
-
-@app.route("/gatus")
-def gatus_page():
-    c = cfg()
-    url = service_url(c, "gatus_url")
-    ok, detail = check_http_service(url, "Gatus")
-    body = f"""
-{topbar('Gatus')}
-<div class="grid">
-  {service_card('Gatus Dashboard', url, 'fa-signal', 'green')}
-  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
-  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Set the Gatus URL</small></a>
+  <small>Use this page to configure it</small>
 </div>
 """
-    return shell("Gatus", body, "Gatus")
 
 
-@app.route("/beszel")
-def beszel_page():
+def save_url_setting(key, field_name=None):
     c = cfg()
-    url = service_url(c, "beszel_url")
-    ok, detail = check_http_service(url, "Beszel")
-    body = f"""
-{topbar('Beszel')}
-<div class="grid">
-  {service_card('Beszel Dashboard', url, 'fa-gauge-simple-high', 'teal')}
-  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
-  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Set the Beszel URL</small></a>
-</div>
-"""
-    return shell("Beszel", body, "Beszel")
+    c[key] = request.form.get(field_name or key, "").strip()
+    save_cfg(c)
+    restart_collector_service()
+    return c
 
 
-@app.route("/telegram", methods=["GET", "POST"])
-def telegram_page():
-    c = cfg()
-    notice = ""
-    notice_class = "setup-ok"
-    if request.method == "POST":
-        ok, notice = send_telegram_message(c, "NetSpecter Telegram integration test.")
-        notice_class = "setup-ok" if ok else "setup-warning"
-    ok, detail = check_telegram_config(c)
-    notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
-    body = f"""
-{topbar('Telegram')}
-{notice_html}
-<div class="grid">
-  <div class="card"><div class="label">Bot</div><span class="big {'green' if ok else 'yellow'}">{'Ready' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
-  <a class="card" href="/integrations"><div class="label">Configuration</div><span class="big blue">Edit</span><small>Bot token and chat ID</small></a>
-  <form class="card" method="post">
-    {csrf_input()}
-    <button type="submit" style="background:none; border:0; padding:0; margin:0; width:100%; min-height:82px; text-align:left; color:inherit; cursor:pointer;">
-      <div class="label">Test Alert</div>
-      <span class="big green">Send</span>
-      <small>Send a Telegram test message</small>
-    </button>
-  </form>
-</div>
-"""
-    return shell("Telegram", body, "Telegram")
-
-
-@app.route("/integrations", methods=["GET", "POST"])
-def integrations():
+@app.route("/unifi", methods=["GET", "POST"])
+def unifi_page():
     c = cfg()
     notice = ""
     notice_class = "setup-ok"
@@ -5822,19 +5768,6 @@ def integrations():
             c["unifi_password"] = password
         if request.form.get("clear_unifi_password") == "1":
             c["unifi_password"] = ""
-        c["gatus_url"] = request.form.get("gatus_url", "").strip()
-        c["beszel_url"] = request.form.get("beszel_url", "").strip()
-        c["telegram_enabled"] = request.form.get("telegram_enabled") == "1"
-        c["telegram_chat_id"] = request.form.get("telegram_chat_id", "").strip()
-        telegram_token = request.form.get("telegram_bot_token", "")
-        if telegram_token:
-            c["telegram_bot_token"] = telegram_token
-        if request.form.get("clear_telegram_bot_token") == "1":
-            c["telegram_bot_token"] = ""
-        try:
-            c["scheduled_speedtests_per_day"] = min(5, max(0, int(request.form.get("scheduled_speedtests_per_day", "0"))))
-        except ValueError:
-            c["scheduled_speedtests_per_day"] = 0
         save_cfg(c)
         restart_collector_service()
         action = request.form.get("action")
@@ -5847,64 +5780,140 @@ def integrations():
         elif action == "test_unifi":
             ok, notice = check_unifi_connection(c)
             notice_class = "setup-ok" if ok else "setup-warning"
-        elif action == "test_telegram":
-            ok, notice = send_telegram_message(c, "NetSpecter Telegram integration test.")
-            notice_class = "setup-ok" if ok else "setup-warning"
         else:
-            notice = "Integration options saved. The collector has restarted."
-
+            notice = "UniFi options saved. The collector has restarted."
+    ok, detail = check_unifi_connection(c)
     enabled_checked = " checked" if c.get("unifi_enabled") else ""
     skip_tls_checked = " checked" if c.get("unifi_skip_tls_verify") else ""
-    telegram_checked = " checked" if c.get("telegram_enabled") else ""
-    schedule_options = "".join(
-        f'<option value="{number}"{" selected" if int(c.get("scheduled_speedtests_per_day", 0) or 0) == number else ""}>{number if number else "Off"}</option>'
-        for number in range(0, 6)
-    )
     notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
     body = f"""
-{topbar('Integrations')}
-{settings_menu('Integrations')}
+{topbar('UniFi')}
 {notice_html}
+<div class="grid">
+  <div class="card"><div class="label">UniFi Discovery</div><span class="big {'green' if ok else 'yellow'}">{'Ready' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+  <a class="card" href="/devices"><div class="label">Imported Clients</div><span class="big blue">Devices</span><small>UniFi names appear in Devices</small></a>
+</div>
 <div class="panel settings">
-  <h2>UniFi Device Discovery (Optional)</h2>
-  <p>Enable this only if you own a UniFi console. It imports connected client names, IP addresses and MAC addresses so Devices can include UniFi clients even when their traffic does not cross NetSpecter.</p>
+  <h2>UniFi Device Discovery</h2>
   <form method="post">
     {csrf_input()}
     <label><input type="checkbox" name="unifi_enabled" value="1" style="width:auto"{enabled_checked}> Enable UniFi Device Discovery</label>
     <label>UniFi Network API URL</label>
     <input name="unifi_connector_url" value="{h(c.get('unifi_connector_url', ''))}" placeholder="https://gateway-address/proxy/network/integration">
-    <small>Use your local gateway URL, such as https://gateway-address/proxy/network/integration.</small>
     <label><input type="checkbox" name="unifi_skip_tls_verify" value="1" style="width:auto"{skip_tls_checked}> Allow self-signed certificate for local UniFi gateway</label>
-    <small>Enable this only when using your local gateway HTTPS address and its built-in certificate.</small>
     <label>UniFi Site ID</label>
     <input name="unifi_site_id" value="{h(c.get('unifi_site_id', ''))}" placeholder="Your UniFi site ID">
-    <small>Leave this blank and use Find Site Automatically after entering the local gateway credentials below.</small>
     <label>Local UniFi Username</label>
     <input name="unifi_username" value="{h(c.get('unifi_username', ''))}" placeholder="Only needed for local gateway auth">
-    <small>Use a local UniFi admin account that can sign in to the gateway and view Network clients.</small>
     <label>Local UniFi Password</label>
     <input name="unifi_password" type="password" placeholder="Leave blank to keep saved local UniFi password">
-    <small>The local UniFi password is encrypted in NetSpecter's local config and used only for gateway login.</small>
+    <small>The local UniFi password is encrypted in NetSpecter's local config.</small>
     <label><input type="checkbox" name="clear_unifi_username" value="1" style="width:auto"> Clear saved UniFi username</label>
     <label><input type="checkbox" name="clear_unifi_password" value="1" style="width:auto"> Clear saved UniFi password</label>
+    <button type="submit" name="action" value="save">Save UniFi</button>
+    <button type="submit" name="action" value="find_unifi_site">Find Site Automatically</button>
+    <button type="submit" name="action" value="test_unifi">Save and Test UniFi</button>
+  </form>
+</div>
+"""
+    return shell("UniFi", body, "UniFi")
 
-    <h2 style="margin-top:28px;">Speed Test History (Optional)</h2>
-    <p>Manual speed tests are always stored. Scheduled tests consume internet data, so automatic runs are off unless you enable them here.</p>
-    <label>Automatic Speed Tests Per Day</label>
-    <select name="scheduled_speedtests_per_day">{schedule_options}</select>
-    <small>Select up to 5 tests per day, spread across daytime and evening hours.</small>
 
-    <h2 style="margin-top:28px;">Service Dashboards (Optional)</h2>
-    <p>Link NetSpecter to companion service dashboards without letting them crowd the main navigation.</p>
+@app.route("/gatus", methods=["GET", "POST"])
+def gatus_page():
+    c = cfg()
+    notice = ""
+    if request.method == "POST":
+        c = save_url_setting("gatus_url")
+        notice = "Gatus URL saved."
+    url = service_url(c, "gatus_url")
+    ok, detail = check_http_service(url, "Gatus")
+    notice_html = f'<div class="setup-ok">{h(notice)}</div>' if notice else ""
+    body = f"""
+{topbar('Gatus')}
+{notice_html}
+<div class="grid">
+  {service_card('Gatus Dashboard', url, 'fa-signal', 'green')}
+  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+</div>
+<div class="panel settings">
+  <h2>Gatus</h2>
+  <form method="post">
+    {csrf_input()}
     <label>Gatus URL</label>
-    <input name="gatus_url" value="{h(c.get('gatus_url', ''))}" placeholder="http://netspecter:8080">
-    <small>Used by the Gatus page and Health cards. Leave blank until Gatus is installed.</small>
-    <label>Beszel URL</label>
-    <input name="beszel_url" value="{h(c.get('beszel_url', ''))}" placeholder="http://netspecter:8090">
-    <small>Used by the Beszel page and Health cards. Leave blank until Beszel is installed.</small>
+    <input name="gatus_url" value="{h(url)}" placeholder="http://netspecter:8080">
+    <small>Set this after Gatus is installed. NetSpecter will launch and health-check this URL.</small>
+    <button type="submit">Save Gatus</button>
+  </form>
+</div>
+"""
+    return shell("Gatus", body, "Gatus")
 
-    <h2 style="margin-top:28px;">Telegram Alerts (Optional)</h2>
-    <p>Telegram can be used for test alerts now and system notifications as more alert workflows are added.</p>
+
+@app.route("/beszel", methods=["GET", "POST"])
+def beszel_page():
+    c = cfg()
+    notice = ""
+    if request.method == "POST":
+        c = save_url_setting("beszel_url")
+        notice = "Beszel URL saved."
+    url = service_url(c, "beszel_url")
+    ok, detail = check_http_service(url, "Beszel")
+    notice_html = f'<div class="setup-ok">{h(notice)}</div>' if notice else ""
+    body = f"""
+{topbar('Beszel')}
+{notice_html}
+<div class="grid">
+  {service_card('Beszel Dashboard', url, 'fa-gauge-simple-high', 'teal')}
+  <div class="card"><div class="label">Status</div><span class="big {'green' if ok else 'yellow'}">{'Online' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+</div>
+<div class="panel settings">
+  <h2>Beszel</h2>
+  <form method="post">
+    {csrf_input()}
+    <label>Beszel URL</label>
+    <input name="beszel_url" value="{h(url)}" placeholder="http://netspecter:8090">
+    <small>Set this after Beszel is installed. NetSpecter will launch and health-check this URL.</small>
+    <button type="submit">Save Beszel</button>
+  </form>
+</div>
+"""
+    return shell("Beszel", body, "Beszel")
+
+
+@app.route("/telegram", methods=["GET", "POST"])
+def telegram_page():
+    c = cfg()
+    notice = ""
+    notice_class = "setup-ok"
+    if request.method == "POST":
+        c["telegram_enabled"] = request.form.get("telegram_enabled") == "1"
+        c["telegram_chat_id"] = request.form.get("telegram_chat_id", "").strip()
+        telegram_token = request.form.get("telegram_bot_token", "")
+        if telegram_token:
+            c["telegram_bot_token"] = telegram_token
+        if request.form.get("clear_telegram_bot_token") == "1":
+            c["telegram_bot_token"] = ""
+        save_cfg(c)
+        restart_collector_service()
+        if request.form.get("action") == "test_telegram":
+            ok, notice = send_telegram_message(c, "NetSpecter Telegram integration test.")
+            notice_class = "setup-ok" if ok else "setup-warning"
+        else:
+            notice = "Telegram options saved."
+    ok, detail = check_telegram_config(c)
+    telegram_checked = " checked" if c.get("telegram_enabled") else ""
+    notice_html = f'<div class="{notice_class}">{h(notice)}</div>' if notice else ""
+    body = f"""
+{topbar('Telegram')}
+{notice_html}
+<div class="grid">
+  <div class="card"><div class="label">Bot</div><span class="big {'green' if ok else 'yellow'}">{'Ready' if ok else 'Setup'}</span><small>{h(detail)}</small></div>
+</div>
+<div class="panel settings">
+  <h2>Telegram Alerts</h2>
+  <form method="post">
+    {csrf_input()}
     <label><input type="checkbox" name="telegram_enabled" value="1" style="width:auto"{telegram_checked}> Enable Telegram Alerts</label>
     <label>Telegram Bot Token</label>
     <input name="telegram_bot_token" type="password" placeholder="Leave blank to keep saved token">
@@ -5912,14 +5921,17 @@ def integrations():
     <label>Telegram Chat ID</label>
     <input name="telegram_chat_id" value="{h(c.get('telegram_chat_id', ''))}" placeholder="123456789">
     <label><input type="checkbox" name="clear_telegram_bot_token" value="1" style="width:auto"> Clear saved Telegram bot token</label>
-    <button type="submit" name="action" value="save">Save Options</button>
-    <button type="submit" name="action" value="find_unifi_site">Find Site Automatically</button>
-    <button type="submit" name="action" value="test_unifi">Save and Test UniFi</button>
-    <button type="submit" name="action" value="test_telegram">Save and Test Telegram</button>
+    <button type="submit" name="action" value="save">Save Telegram</button>
+    <button type="submit" name="action" value="test_telegram">Save and Send Test</button>
   </form>
 </div>
 """
-    return shell("Integrations", body, "Integrations")
+    return shell("Telegram", body, "Telegram")
+
+
+@app.route("/integrations", methods=["GET", "POST"])
+def integrations():
+    return redirect("/unifi")
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -6141,8 +6153,16 @@ def speed_test():
     return redirect("/speed-tests?ran=1")
 
 
-@app.route("/speed-tests")
+@app.route("/speed-tests", methods=["GET", "POST"])
 def speed_tests():
+    c = cfg()
+    notice = '<div class="setup-ok">Speed test completed and saved.</div>' if request.args.get("ran") == "1" else ""
+    if request.method == "POST":
+        enabled = request.form.get("scheduled_speedtests_enabled") == "1"
+        c["scheduled_speedtests_per_day"] = 1 if enabled else 0
+        save_cfg(c)
+        notice = '<div class="setup-ok">Speed test schedule saved.</div>'
+
     rows = query(
         """
         SELECT ts, source, latency_ms, download_mbps, upload_mbps, result_text, success
@@ -6156,7 +6176,8 @@ def speed_tests():
     chart_download = json.dumps([r["download_mbps"] for r in recent])
     chart_upload = json.dumps([r["upload_mbps"] for r in recent])
     latest = rows[0] if rows else None
-    schedule_count = int(cfg().get("scheduled_speedtests_per_day", 0) or 0)
+    schedule_count = int(c.get("scheduled_speedtests_per_day", 0) or 0)
+    schedule_checked = " checked" if schedule_count else ""
     table = ""
     for r in rows[:30]:
         latency_text = f"{r['latency_ms']:.2f} ms" if r["latency_ms"] is not None else "-"
@@ -6175,7 +6196,6 @@ def speed_tests():
     latest_download = f"{latest['download_mbps']:.2f} Mbps" if latest and latest["download_mbps"] is not None else "-"
     latest_upload = f"{latest['upload_mbps']:.2f} Mbps" if latest and latest["upload_mbps"] is not None else "-"
     latest_latency = f"{latest['latency_ms']:.2f} ms" if latest and latest["latency_ms"] is not None else "-"
-    notice = '<div class="setup-ok">Speed test completed and saved.</div>' if request.args.get("ran") == "1" else ""
 
     body = f"""
 {topbar('Speed Test History')}
@@ -6184,11 +6204,21 @@ def speed_tests():
   <div class="card"><div class="label">Latest Download</div><span class="big blue">{h(latest_download)}</span></div>
   <div class="card"><div class="label">Latest Upload</div><span class="big purple">{h(latest_upload)}</span></div>
   <div class="card"><div class="label">Latest Latency</div><span class="big teal">{h(latest_latency)}</span></div>
-  <div class="card"><div class="label">Automatic Tests</div><span class="big {'green' if schedule_count else 'yellow'}">{schedule_count if schedule_count else 'Off'}</span><small>{'per day' if schedule_count else 'Enable in Integrations'}</small></div>
+  <div class="card"><div class="label">Automatic Tests</div><span class="big {'green' if schedule_count else 'yellow'}">{'On' if schedule_count else 'Off'}</span><small>{'Once per day' if schedule_count else 'Disabled'}</small></div>
+</div>
+<div class="panel settings">
+  <h2>Automatic Speed Tests</h2>
+  <p>Scheduled tests consume internet data. Keep this disabled unless you want NetSpecter to test the WAN regularly.</p>
+  <form method="post">
+    {csrf_input()}
+    <label><input type="checkbox" name="scheduled_speedtests_enabled" value="1" style="width:auto"{schedule_checked}> Enable automatic speed tests</label>
+    <small>When enabled, NetSpecter runs one scheduled speed test per day.</small>
+    <button type="submit">Save Speed Test Schedule</button>
+  </form>
 </div>
 <div class="panel">
   <h2>Internet Speed History</h2>
-  <p>Tests transfer data over your internet connection. Automatic tests are optional and configured under <a href="/integrations">Integrations</a>.</p>
+  <p>Tests transfer data over your internet connection.</p>
   <form method="post" action="/speed-test">
     {csrf_input()}
     <button type="submit">Run Speed Test Now</button>

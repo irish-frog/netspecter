@@ -283,13 +283,13 @@ Existing appliances keep their saved retention values during upgrades. To use th
 
 ---
 
-## Optional Integrations
+## Optional Services
 
 ### UniFi Device Discovery
 
 If you own a UniFi console, NetSpecter can import client names, IP addresses, and MAC addresses from the UniFi Network API connector. This helps Devices show friendly names even when a client's traffic does not cross the NetSpecter bridge.
 
-Configure it from Integrations:
+Configure it from Services > UniFi:
 
 * Enable UniFi Device Discovery
 * Enter the connector URL for your local gateway, such as `https://192.168.99.1/proxy/network/integration`
@@ -307,11 +307,11 @@ Use Settings to configure SNMP targets and MQTT topics, then open Telemetry to s
 
 ### Companion Services
 
-Use Integrations to add optional service links for Gatus and Beszel, plus Telegram bot credentials for alert delivery. NetSpecter shows these in the Services menu and Service Health page, but does not install or manage those services yet.
+Use the Services menu to configure optional service links for Gatus and Beszel, plus Telegram bot credentials for alert delivery. NetSpecter shows each service on its own page and in Service Health, but does not install or manage those services yet.
 
 ### Speed Tests
 
-Manual speed tests are stored automatically. Optional scheduled speed tests can run up to five times per day and are shown in Speed Tests history. Scheduled tests consume internet data, so they are disabled by default.
+Manual speed tests are stored automatically. Optional scheduled speed tests can run once per day and are shown in Speed Tests history. Scheduled tests consume internet data, so they are disabled by default.
 
 ### IDS Alerts
 
