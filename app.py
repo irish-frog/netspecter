@@ -1770,40 +1770,68 @@ def shell(title, body, active="Dashboard"):
         return response
 
     # ---------------------------------------------------
-    # Sidebar navigation items
+    # Sidebar navigation groups
     # ---------------------------------------------------
     # Each tuple is:
     #   Display name, URL, Font Awesome icon
     # ---------------------------------------------------
 
-    nav_items = [
-        ("Dashboard", "/", "fa-chart-line"),
-        ("Devices", "/devices", "fa-desktop"),
-        ("Traffic", "/traffic", "fa-arrow-trend-up"),
-        ("History", "/history", "fa-clock-rotate-left"),
-        ("Applications", "/applications", "fa-layer-group"),
-        ("Blocked", "/blocked", "fa-ban"),
-        ("Services", "/blocked-services", "fa-filter-circle-xmark"),
-        ("IDS Alerts", "/ids-alerts", "fa-shield-virus"),
-        ("Map", "/map", "fa-diagram-project"),
-        ("Exports", "/exports", "fa-file-export"),
-        ("AdGuard", "/adguard", "fa-shield-halved"),
-        ("Speed Tests", "/speed-tests", "fa-gauge-high"),
-        ("Integrations", "/integrations", "fa-plug"),
-        ("Health", "/health", "fa-heart-pulse"),
-        ("Telemetry", "/telemetry", "fa-satellite-dish"),
-        ("Settings", "/settings", "fa-gear"),
-        ("System", "/system", "fa-server"),
-        ("Logout", "/logout", "fa-right-from-bracket"),
+    nav_groups = [
+        (
+            "Overview",
+            [
+                ("Dashboard", "/", "fa-chart-line"),
+                ("Map", "/map", "fa-diagram-project"),
+            ],
+        ),
+        (
+            "Network",
+            [
+                ("Devices", "/devices", "fa-desktop"),
+                ("Traffic", "/traffic", "fa-arrow-trend-up"),
+                ("History", "/history", "fa-clock-rotate-left"),
+                ("Applications", "/applications", "fa-layer-group"),
+            ],
+        ),
+        (
+            "Security",
+            [
+                ("Blocked", "/blocked", "fa-ban"),
+                ("Services", "/blocked-services", "fa-filter-circle-xmark"),
+                ("IDS Alerts", "/ids-alerts", "fa-shield-virus"),
+                ("AdGuard", "/adguard", "fa-shield-halved"),
+            ],
+        ),
+        (
+            "Services",
+            [
+                ("Integrations", "/integrations", "fa-plug"),
+                ("Telemetry", "/telemetry", "fa-satellite-dish"),
+                ("Speed Tests", "/speed-tests", "fa-gauge-high"),
+            ],
+        ),
+        (
+            "System",
+            [
+                ("Health", "/health", "fa-heart-pulse"),
+                ("Exports", "/exports", "fa-file-export"),
+                ("Settings", "/settings", "fa-gear"),
+                ("System", "/system", "fa-server"),
+                ("Logout", "/logout", "fa-right-from-bracket"),
+            ],
+        ),
     ]
 
     nav = ""
     app_shell_pages = {"Dashboard", "Devices", "Traffic"}
 
-    for label, url, icon in nav_items:
-        cls = "active" if label == active else ""
-        shell_attr = ' data-app-shell="1"' if label in app_shell_pages else ""
-        nav += f'<a class="{cls}" href="{url}"{shell_attr}><i class="fa-solid {icon}"></i>{label}</a>'
+    for group_label, items in nav_groups:
+        nav += f'<div class="nav-group"><div class="nav-group-label">{group_label}</div>'
+        for label, url, icon in items:
+            cls = "active" if label == active else ""
+            shell_attr = ' data-app-shell="1"' if label in app_shell_pages else ""
+            nav += f'<a class="{cls}" href="{url}"{shell_attr}><i class="fa-solid {icon}"></i>{label}</a>'
+        nav += "</div>"
 
     # ---------------------------------------------------
     # Standard page shell
@@ -1817,7 +1845,7 @@ def shell(title, body, active="Dashboard"):
 <title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="/static/favicon.png">
-<link rel="stylesheet" href="/static/theme.css?v=20260531b">
+<link rel="stylesheet" href="/static/theme.css?v=20260710a">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
