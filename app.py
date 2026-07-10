@@ -1286,7 +1286,7 @@ def git_upstream_ref(source_root):
 def update_status(force=False, fetch_remote=False):
     now = time.time()
     cached = UPDATE_STATUS_CACHE.get("data")
-    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 3600:
+    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("ts", 0) or 0) < 86400:
         return cached
 
     source = source_checkout_root()
@@ -2177,7 +2177,7 @@ async function refreshUpdateStatusBadge() {{
     const span = badge.querySelector("span");
     if (!span) return;
     if (data.available) {{
-      span.textContent = "Update Available";
+      span.textContent = "Outdated";
       badge.classList.add("update-available");
       const dashboardButton = document.getElementById("dashboardUpdateButton");
       if (dashboardButton) dashboardButton.style.display = "inline-flex";
@@ -2611,7 +2611,7 @@ def dashboard():
       {time_picker()}
       <form id="dashboardUpdateButton" class="dashboard-update-form" method="post" action="/system">
         {csrf_input()}
-        <button type="submit"><i class="fa-solid fa-cloud-arrow-down"></i> Update Available</button>
+        <button type="submit"><i class="fa-solid fa-cloud-arrow-down"></i> Outdated</button>
       </form>
     </div>
     <form method="post" action="/speed-test" class="speed-test-form">
@@ -5969,7 +5969,7 @@ def integrations():
 def settings():
     c = cfg()
     section = request.values.get("section", "network").strip().lower()
-    valid_sections = {"network", "adguard", "traffic", "telemetry", "web", "password"}
+    valid_sections = {"network", "adguard", "traffic", "telemetry", "web"}
     if section not in valid_sections:
         section = "network"
     section_keys = {
@@ -5982,7 +5982,6 @@ def settings():
             "mqtt_client_id", "mqtt_subscribe_topics",
         ],
         "web": ["web_host", "web_port", "auth_enabled", "admin_user"],
-        "password": [],
     }
     hidden_settings = {"app_name", "tagline", "admin_password_hash"} | INTEGRATION_SETTINGS_KEYS
     editable_keys = [key for key in c.keys() if key not in hidden_settings]
@@ -6012,7 +6011,7 @@ def settings():
 
         new_password = request.form.get("admin_new_password", "")
         confirm_password = request.form.get("admin_confirm_password", "")
-        if section == "password" and new_password:
+        if section == "web" and new_password:
             if len(new_password) >= 8 and new_password == confirm_password:
                 c["admin_password_hash"] = generate_password_hash(new_password)
 
@@ -6109,8 +6108,8 @@ def settings():
 <label>Confirm New Admin Password</label>
 <input type="password" name="admin_confirm_password" placeholder="Repeat new login password">
 """
-    if section == "password":
-        fields = password_fields
+    if section == "web":
+        fields += password_fields
 
     section_tabs = [
         ("network", "Network", "fa-network-wired"),
@@ -6118,7 +6117,6 @@ def settings():
         ("traffic", "Traffic", "fa-arrow-trend-up"),
         ("telemetry", "Telemetry", "fa-satellite-dish"),
         ("web", "Web/Login", "fa-window-maximize"),
-        ("password", "Password", "fa-key"),
     ]
     settings_section_menu = ""
     for key, label, icon in section_tabs:
@@ -6337,7 +6335,7 @@ def system():
     else:
         update_notice = ""
     if status.get("ok"):
-        update_label = "Update Available" if status.get("available") else "Up to Date"
+        update_label = "Outdated" if status.get("available") else "Up to Date"
         update_detail = f"Installed {h(status.get('current', '-'))}; latest {h(status.get('latest', '-'))}."
     else:
         update_label = "Check Failed"

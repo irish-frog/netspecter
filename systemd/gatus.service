@@ -1,0 +1,14 @@
+[Unit]
+Description=Gatus Status Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=GATUS_CONFIG_PATH=/etc/netspecter/gatus/config.yaml
+ExecStart=/usr/local/bin/gatus
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

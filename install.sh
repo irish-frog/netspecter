@@ -8,6 +8,7 @@ CONFIG_DIR="/etc/netspecter"
 DATA_DIR="/var/lib/netspecter"
 SERVICE_DIR="/etc/systemd/system"
 INSTALL_ADGUARD="${INSTALL_ADGUARD:-1}"
+INSTALL_GATUS="${INSTALL_GATUS:-0}"
 ADGUARD_JUST_INSTALLED=0
 OS_ID=""
 OS_VERSION_ID=""
@@ -91,6 +92,81 @@ install_suricata_optional() {
   if getent group adm >/dev/null 2>&1; then
     chgrp adm /var/log/suricata 2>/dev/null || true
     chmod 750 /var/log/suricata 2>/dev/null || true
+  fi
+}
+
+primary_ip() {
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+set_config_value() {
+  local key="$1"
+  local value="$2"
+  python3 - "$CONFIG_DIR/config.json" "$key" "$value" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+data[key] = value
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+}
+
+install_gatus_optional() {
+  if [ "$INSTALL_GATUS" != "1" ]; then
+    echo "Gatus install skipped. Run with INSTALL_GATUS=1 to install it."
+    return 0
+  fi
+
+  echo "Installing Gatus status dashboard..."
+  apt install -y golang-go
+
+  if ! command -v gatus >/dev/null 2>&1; then
+    GOBIN=/usr/local/bin go install github.com/TwiN/gatus/v5@latest
+  fi
+
+  mkdir -p "$CONFIG_DIR/gatus"
+  cat > "$CONFIG_DIR/gatus/config.yaml" <<'EOF'
+ui:
+  title: NetSpecter Status
+web:
+  port: 8080
+endpoints:
+  - name: NetSpecter Web
+    group: NetSpecter
+    url: "http://127.0.0.1:5050/health"
+    interval: 60s
+    conditions:
+      - "[STATUS] == 200"
+  - name: AdGuard Web
+    group: DNS
+    url: "http://127.0.0.1/"
+    interval: 60s
+    conditions:
+      - "[STATUS] == 200"
+EOF
+
+  chmod 700 "$CONFIG_DIR/gatus"
+  chmod 600 "$CONFIG_DIR/gatus/config.yaml"
+  cp systemd/gatus.service "$SERVICE_DIR/gatus.service"
+  systemctl daemon-reload
+  systemctl enable --now gatus
+
+  local host_ip
+  host_ip="$(primary_ip)"
+  if [ -n "$host_ip" ]; then
+    set_config_value "gatus_url" "http://${host_ip}:8080"
+  else
+    set_config_value "gatus_url" "http://127.0.0.1:8080"
   fi
 }
 
@@ -186,6 +262,7 @@ systemctl restart netspecter-watchdog.timer
 systemctl restart netspecter-speedtest.timer
 systemctl enable --now vnstat || true
 systemctl enable AdGuardHome || true
+install_gatus_optional
 
 echo "[10/10] IDS setup complete."
 
