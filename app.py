@@ -5838,21 +5838,35 @@ def parse_speedtest_metrics(output):
         match = re.search(pattern, output or "", re.IGNORECASE)
         return float(match.group(1)) if match else None
     return (
-        value(r"Latency:\s*([0-9.]+)\s*ms"),
-        value(r"Download:\s*([0-9.]+)\s*Mbps"),
-        value(r"Upload:\s*([0-9.]+)\s*Mbps"),
+        value(r"(?:Latency|Ping):\s*([0-9.]+)\s*ms"),
+        value(r"Download:\s*([0-9.]+)\s*(?:Mbit/s|Mbps)"),
+        value(r"Upload:\s*([0-9.]+)\s*(?:Mbit/s|Mbps)"),
     )
+
+
+def speedtest_command():
+    candidates = [
+        ("/usr/bin/speedtest", ["--accept-license", "--accept-gdpr"]),
+        ("/usr/bin/speedtest-cli", []),
+    ]
+    for path, args in candidates:
+        if Path(path).exists():
+            return [path] + args
+    return None
 
 
 def run_and_store_speedtest(source="manual"):
     success = False
     try:
+        command = speedtest_command()
+        if not command:
+            raise FileNotFoundError("No supported speed test client found")
         speedtest_env = os.environ.copy()
         speedtest_env.setdefault("HOME", "/root")
         speedtest_env.setdefault("LANG", "C.UTF-8")
         speedtest_env.setdefault("LC_ALL", "C.UTF-8")
         result = subprocess.run(
-            ["/usr/bin/speedtest", "--accept-license", "--accept-gdpr"],
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -5866,7 +5880,7 @@ def run_and_store_speedtest(source="manual"):
         else:
             success = True
     except FileNotFoundError:
-        output = "The official Ookla speedtest client is not installed. Re-run the NetSpecter installer to install it."
+        output = "No supported speed test client is installed. Re-run the NetSpecter installer to install speedtest-cli."
     except subprocess.TimeoutExpired:
         output = "Speed test timed out after 120 seconds."
     except Exception as error:

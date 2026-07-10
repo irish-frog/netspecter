@@ -62,8 +62,15 @@ def run_test():
     env.setdefault("LC_ALL", "C.UTF-8")
     success = False
     try:
+        command = None
+        for candidate in (["/usr/bin/speedtest", "--accept-license", "--accept-gdpr"], ["/usr/bin/speedtest-cli"]):
+            if Path(candidate[0]).exists():
+                command = candidate
+                break
+        if command is None:
+            raise FileNotFoundError("No supported speed test client found")
         result = subprocess.run(
-            ["/usr/bin/speedtest", "--accept-license", "--accept-gdpr"],
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -79,9 +86,9 @@ def run_test():
         output = f"Scheduled speed test could not run: {error}"
     return (
         output,
-        parse_value(r"Latency:\s*([0-9.]+)\s*ms", output),
-        parse_value(r"Download:\s*([0-9.]+)\s*Mbps", output),
-        parse_value(r"Upload:\s*([0-9.]+)\s*Mbps", output),
+        parse_value(r"(?:Latency|Ping):\s*([0-9.]+)\s*ms", output),
+        parse_value(r"Download:\s*([0-9.]+)\s*(?:Mbit/s|Mbps)", output),
+        parse_value(r"Upload:\s*([0-9.]+)\s*(?:Mbit/s|Mbps)", output),
         success,
     )
 

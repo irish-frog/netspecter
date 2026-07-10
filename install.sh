@@ -9,24 +9,96 @@ DATA_DIR="/var/lib/netspecter"
 SERVICE_DIR="/etc/systemd/system"
 INSTALL_ADGUARD="${INSTALL_ADGUARD:-1}"
 ADGUARD_JUST_INSTALLED=0
+OS_ID=""
+OS_VERSION_ID=""
+OS_VERSION_CODENAME=""
 
 if [ "${EUID}" -ne 0 ]; then
   echo "Please run as root." >&2
   exit 1
 fi
 
+detect_os() {
+  if [ ! -r /etc/os-release ]; then
+    echo "Cannot detect operating system: /etc/os-release not found." >&2
+    exit 1
+  fi
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  OS_ID="${ID:-}"
+  OS_VERSION_ID="${VERSION_ID:-}"
+  OS_VERSION_CODENAME="${VERSION_CODENAME:-}"
+
+  if [ "$OS_ID" != "debian" ]; then
+    echo "Unsupported operating system: ${PRETTY_NAME:-unknown}. NetSpecter v2 targets Debian 13 Trixie." >&2
+    exit 1
+  fi
+
+  case "$OS_VERSION_ID" in
+    13)
+      echo "Detected Debian 13 Trixie."
+      ;;
+    12)
+      echo "Detected Debian 12 Bookworm. Debian 13 Trixie is the primary supported OS; continuing without cross-release repositories."
+      ;;
+    *)
+      echo "Unsupported Debian version: ${OS_VERSION_ID:-unknown}. NetSpecter v2 targets Debian 13 Trixie." >&2
+      exit 1
+      ;;
+  esac
+}
+
 port_3000_in_use() {
   ss -H -ltn 'sport = :3000' 2>/dev/null | grep -q LISTEN
 }
 
+install_speedtest_optional() {
+  if dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok installed" || \
+     dpkg-query -W -f='${Status}' speedtest-cli 2>/dev/null | grep -q "install ok installed"; then
+    return 0
+  fi
+
+  echo "Installing Ookla Speedtest if the external repository supports this Debian release..."
+  if curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash; then
+    apt update || true
+    if apt install -y speedtest; then
+      return 0
+    fi
+  fi
+
+  echo "Ookla Speedtest is unavailable for this Debian release; installing Debian speedtest-cli fallback..."
+  if apt install -y speedtest-cli; then
+    return 0
+  fi
+
+  echo "WARNING: no speed test client is available. NetSpecter will install without speed test support." >&2
+  return 0
+}
+
+install_suricata_optional() {
+  if apt install -y suricata suricata-update; then
+    if suricata -T -c /etc/suricata/suricata.yaml >/dev/null 2>&1; then
+      systemctl enable --now suricata || true
+    else
+      echo "WARNING: Suricata installed but configuration validation failed; not restarting Suricata." >&2
+    fi
+  else
+    echo "WARNING: Suricata could not be installed from Debian ${OS_VERSION_CODENAME:-$OS_VERSION_ID} repositories. IDS views will stay available but may have no alert log." >&2
+  fi
+
+  mkdir -p /var/log/suricata
+  if getent group adm >/dev/null 2>&1; then
+    chgrp adm /var/log/suricata 2>/dev/null || true
+    chmod 750 /var/log/suricata 2>/dev/null || true
+  fi
+}
+
+detect_os
+
 echo "[1/9] Refreshing package metadata and installing setup tools..."
 apt update
 apt install -y wget curl gnupg ca-certificates lsb-release iproute2
-
-BACKPORTS_LIST="/etc/apt/sources.list.d/bookworm-backports.list"
-if [ ! -f "$BACKPORTS_LIST" ]; then
-  echo "deb http://deb.debian.org/debian bookworm-backports main contrib non-free non-free-firmware" > "$BACKPORTS_LIST"
-fi
 
 echo "[2/9] Installing AdGuard Home first if requested..."
 if [ "$INSTALL_ADGUARD" = "1" ] && ! command -v AdGuardHome >/dev/null 2>&1 && [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
@@ -50,23 +122,9 @@ if [ "$ADGUARD_JUST_INSTALLED" = "1" ] && port_3000_in_use; then
 fi
 
 echo "[3/10] Installing NetSpecter base packages..."
-if ! dpkg-query -W -f='${Status}' speedtest 2>/dev/null | grep -q "install ok installed"; then
-  curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
-fi
-apt remove -y speedtest-cli >/dev/null 2>&1 || true
-apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data snmp speedtest suricata-update
-apt update
-if apt-cache policy suricata 2>/dev/null | grep -q 'bookworm-backports'; then
-  apt install -y -t bookworm-backports suricata
-  systemctl enable --now suricata || true
-  mkdir -p /var/log/suricata
-  chown -R suricata:suricata /var/log/suricata 2>/dev/null || true
-  if [ ! -f /etc/suricata/suricata.yaml ]; then
-    echo "Suricata config was not found after install; check the package install output." >&2
-  fi
-else
-  echo "Suricata package is not available from bookworm-backports; installing suricata-update only."
-fi
+apt install -y python3 python3-pip python3-venv sqlite3 bridge-utils nftables tcpdump curl nano git bmon vnstat ieee-data snmp
+install_speedtest_optional
+install_suricata_optional
 
 echo "[4/10] Creating folders..."
 mkdir -p "$INSTALL_DIR/static" "$INSTALL_DIR/scripts" "$INSTALL_DIR/adguard" "$CONFIG_DIR/adguard" "$DATA_DIR"
