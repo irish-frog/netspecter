@@ -5171,8 +5171,8 @@ def health_page():
         ("Database", DB_PATH.exists(), f"{health['db_size']} MB"),
         ("Web App", True, "Online"),
     ]
-    gatus_ok, gatus_detail = check_http_service(service_url(c, "gatus_url"), "Gatus")
-    beszel_ok, beszel_detail = check_http_service(service_url(c, "beszel_url"), "Beszel")
+    gatus_ok, gatus_detail = check_http_service(service_url(c, "gatus_url"), "Gatus", timeout=0.4, brief=True)
+    beszel_ok, beszel_detail = check_http_service(service_url(c, "beszel_url"), "Beszel", timeout=0.4, brief=True)
     telegram_ok, telegram_detail = check_telegram_config(c)
     services.extend([
         ("Gatus", gatus_ok, gatus_detail),
@@ -5668,15 +5668,17 @@ def service_url(config, key):
     return str(config.get(key, "") or "").strip().rstrip("/")
 
 
-def check_http_service(url, label):
+def check_http_service(url, label, timeout=2, brief=False):
     if not url:
         return False, f"{label} URL not configured"
     try:
-        res = requests.get(url, timeout=5, verify=False)
+        res = requests.get(url, timeout=timeout, verify=False)
         if 200 <= res.status_code < 400:
             return True, f"Online at {url}"
         return False, f"HTTP {res.status_code} from {url}"
     except Exception as error:
+        if brief:
+            return False, f"{label} unreachable"
         return False, f"{label} check failed: {error}"
 
 
