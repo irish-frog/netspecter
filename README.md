@@ -27,7 +27,7 @@ Use [NetSpecter v2](https://github.com/irish-frog/netspecter-v2) if you have bet
 | Monitoring | Service health checks and stale collector detection |
 | Speed tests | Manual and optional scheduled speed-test history |
 | IDS review | Suricata log review when Suricata is available |
-| Integrations | Optional UniFi, SNMP, MQTT, Gatus, Beszel, and Telegram links |
+| Integrations | Optional UniFi, SNMP, MQTT, and Suricata support |
 | Exports | CSV exports for selected views |
 | Web access | Login-protected dashboard |
 
@@ -159,9 +159,6 @@ Expected result:
 | UniFi | Import client names, MAC addresses, and device details |
 | SNMP | Poll supported network devices |
 | MQTT | Subscribe to telemetry topics |
-| Gatus | Companion service-monitor links |
-| Beszel | Companion metrics links |
-| Telegram | Optional alert delivery where configured |
 | Suricata | IDS alert review when logs are available |
 
 ## Updates
@@ -182,7 +179,7 @@ systemctl restart netspecter-collector
 - NetSpecter is a visibility appliance; it does not replace the router or firewall.
 - DNS blocking is a soft control and can be bypassed by cached DNS, direct IP connections, VPNs, or DNS-over-HTTPS.
 - Bridge deployment requires two physical Ethernet ports.
-- UniFi, SNMP, MQTT, Gatus, Beszel, Telegram, and Suricata are optional.
+- UniFi, SNMP, MQTT, and Suricata are optional.
 - For the fuller current feature set, use [NetSpecter v2](https://github.com/irish-frog/netspecter-v2).
 
 ## Project Status
