@@ -14,7 +14,7 @@ NetSpecter is the original lightweight appliance for home networks, very small n
 
 Use this original NetSpecter when you want a simpler appliance with lower hardware demands.
 
-Use [NetSpecter v2](https://github.com/irish-frog/netspecter-v2) if you have better hardware or want the newer feature set, including expanded monitoring, IDS incident workflows, MaxMind GeoLite2 mapping, stronger backup/restore tooling, telemetry, and broader appliance health views.
+Use [NetSpecter v2](https://github.com/irish-frog/netspecter-v2) if you have better hardware or want the newer feature set, including expanded monitoring, IDS incident workflows, MaxMind GeoLite2 mapping, backup/restore tooling, telemetry, and broader appliance health views.
 
 ## What NetSpecter Does
 
@@ -49,6 +49,8 @@ DNS analytics require clients to use AdGuard Home on the NetSpecter appliance as
 | Recommended | 4 cores | 8 GB | 64 GB SSD | 2 reliable Ethernet ports |
 
 Use an SSD rather than a USB flash drive. Two physical Ethernet ports are required for the supported inline bridge deployment.
+
+The original NetSpecter can run on older low-power hardware such as a Celeron J1900 quad-core system with 8 GB RAM and a 32 GB SSD, or similar.
 
 For heavier IDS use, longer retention, more monitors, telemetry, or faster links, use [NetSpecter v2](https://github.com/irish-frog/netspecter-v2).
 
